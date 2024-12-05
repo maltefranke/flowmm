@@ -30,6 +30,9 @@ def dock_and_optimize_collate_fn(
         for osda_opt, zeolite_opt in zip(batch.osda_opt, batch.zeolite_opt)
     ]
 
+    osda_edges = [osda_opt.edges for osda_opt in batch.osda_opt]
+    osda_edge_feats = [osda_opt.edge_feats for osda_opt in batch.osda_opt]
+
     lengths = [osda.lengths for osda in batch.osda_opt]
     angles = [osda.angles for osda in batch.osda_opt]
 
@@ -45,6 +48,8 @@ def dock_and_optimize_collate_fn(
             lengths=lengths[i],
             angles=angles[i],
             num_atoms=num_atoms[i],
+            edges=osda_edges[i],
+            edge_feats=osda_edge_feats[i],
             batch=torch.ones_like(frac_coords[i], dtype=torch.long) * i,
         )
         for i in range(batch_size)
