@@ -1,5 +1,5 @@
 import torch
-from torch_geometric.data import Batch, HeteroData
+from torch_geometric.data import Batch, HeteroData, Data
 from torch_geometric.loader.dataloader import Collater
 
 from rfm_docking.reassignment import reassign_molecule
@@ -10,6 +10,7 @@ from rfm_docking.sampling import (
     sample_uniform,
     sample_uniform_then_conformer,
 )
+from src.flowmm.rfm.manifolds.flat_torus import FlatTorus01
 
 
 def dock_collate_fn(
@@ -54,22 +55,34 @@ def dock_collate_fn(
     zeolite.mask_f = zeolite_mask_f
 
     # sample mol in fractional space
-    # x0 = osda_manifold.random(*x1.shape, dtype=x1.dtype, device=x1.device)
+    x0 = osda_manifold.random(*x1.shape, dtype=x1.dtype, device=x1.device)
 
     # harmonic prior
-    # x0 = sample_uniform_then_gaussian(osda, batch.loading, sigma=0.05)
-    x0 = sample_harmonic_prior(osda, sigma=0.2)
-    # x0 = sample_uniform(osda, batch.loading)
-    # x0 = sample_uniform_then_conformer(osda, smiles, batch.loading)
-    x0 = manifold_getter.georep_to_flatrep(osda.batch, x0, False).flat
-    x0 = osda_manifold.projx(x0)
+    def sample(sampling="normal"):
+        if "sampling" == "normal":
+            x0 = osda_manifold.random(*x1.shape, dtype=x1.dtype, device=x1.device)
+            return x0
 
-    # x0 = (x1 - 0.47) % 1.0
+        elif sampling == "harmonic":
+            x0 = sample_harmonic_prior(osda, sigma=0.15)
+        elif sampling == "uniform":
+            x0 = sample_uniform(osda, batch.loading)
+        elif sampling == "uniform_then_gaussian":
+            x0 = sample_uniform_then_gaussian(osda, batch.loading, sigma=0.05)
+        elif sampling == "uniform_then_conformer":
+            x0 = sample_uniform_then_conformer(osda, smiles, batch.loading)
+        else:
+            raise ValueError(f"Sampling method <{sampling}> not recognized")
+
+        x0 = manifold_getter.georep_to_flatrep(osda.batch, x0, False).flat
+
+        x0 = osda_manifold.projx(x0)
+        return x0
+
+    x0 = sample()
 
     # lattices is the invariant(!!) representation of the lattice, parametrized by lengths and angles
     lattices = torch.cat([osda.lengths, osda.angles], dim=-1)
-
-    # build edges
 
     # potentially do ot
     if do_ot:

@@ -315,7 +315,7 @@ class CustomCrystDataset(Dataset):
             lengths,
             angles,
             _,  # NOTE edge indices will be overwritten with rdkit featurization
-            to_jimages,
+            _,
             num_atoms,
         ) = data_dict["dock_osda_graph_arrays"]
 
@@ -337,7 +337,6 @@ class CustomCrystDataset(Dataset):
             ).contiguous(),  # shape (2, num_edges)
             edge_feats=osda_edge_feats,
             node_feats=osda_node_feats,
-            to_jimages=torch.LongTensor(to_jimages),
             num_atoms=num_atoms,
             num_bonds=osda_edge_indices.shape[0],
             num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
@@ -368,11 +367,9 @@ class CustomCrystDataset(Dataset):
                 edge_indices.T
             ).contiguous(),  # shape (2, num_edges)
             node_feats=zeolite_node_feats,
-            # to_jimages=torch.LongTensor(to_jimages),
             num_atoms=num_atoms,
             num_bonds=edge_indices.shape[0],
             num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
-            # y=prop.view(1, -1), # TODO mrx prop is now a dict so this will fail
         )
 
         if "optimize" in self.task:
@@ -396,11 +393,9 @@ class CustomCrystDataset(Dataset):
                 ).contiguous(),  # shape (2, num_edges)
                 edge_feats=osda_edge_feats,
                 node_feats=osda_node_feats,
-                # to_jimages=torch.LongTensor(to_jimages),
                 num_atoms=num_atoms,
                 num_bonds=osda_edge_indices.shape[0],
                 num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
-                # y=prop.view(1, -1), # TODO mrx prop is now a dict so this will fail
             )
 
             (
@@ -422,11 +417,9 @@ class CustomCrystDataset(Dataset):
                     edge_indices.T
                 ).contiguous(),  # shape (2, num_edges)
                 node_feats=zeolite_node_feats,
-                # to_jimages=torch.LongTensor(to_jimages),
                 num_atoms=num_atoms,
                 num_bonds=edge_indices.shape[0],
                 num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
-                # y=prop.view(1, -1), # TODO mrx prop is now a dict so this will fail
             )
 
         data = HeteroData()

@@ -349,65 +349,42 @@ class CSPNet(DiffCSPNet):
 
             return edge_index, edge_vector
 
-    def gen_edges_new(self, num_atoms, frac_coords, lattices, batch, radius=7.0):
-        all_edges = []
-        counter = 0
-        for i, lattice in enumerate(lattices):
-            frac_coords_i = frac_coords[batch == i].cpu()
 
-            # Number of atoms
-            num_atoms_i = num_atoms[i]
+def merge_edges(num_osda, num_zeolite, osda_edges, zeolite_edges):
+    osda_edges = osda_edges.clone()
+    zeolite_edges = zeolite_edges.clone()
 
-            # Create a pymatgen Lattice object from the given lattice matrix
-            lattice_pmg = Lattice.from_parameters(*lattice.cpu().tolist())
+    # osda offsets
+    osda_offsets = torch.cumsum(
+        torch.cat([torch.tensor([0], device=num_osda.device), num_osda]), dim=0
+    )[:-1]
 
-            # Create a pymatgen Structure object
-            structure = Structure(
-                lattice=lattice_pmg,
-                species=["H"] * num_atoms_i,  # set dummy species, not needed
-                coords=frac_coords_i,
-                coords_are_cartesian=False,
-            )
+    # zeolite offsets
+    zeolite_offsets = torch.cumsum(
+        torch.cat([torch.tensor([0], device=num_zeolite.device), num_zeolite]), dim=0
+    )[:-1]
 
-            # Initialize lists for edges and distances
-            edges = []
+    zeolite_indices = [
+        torch.logical_and(
+            zeolite_edges >= zeolite_offsets[i], zeolite_edges < zeolite_offsets[i + 1]
+        )
+        for i in range(len(num_osda) - 1)
+    ]
+    zeolite_indices.append(zeolite_edges >= zeolite_offsets[-1])
 
-            # Loop over each site in the structure to find neighbors within the cutoff radius
-            for i in range(num_atoms_i):
-                # Get neighbors within the cutoff radius using get_neighbors method
-                neighbors = structure.get_neighbors(structure[i], radius)
+    osda_indices = [
+        torch.logical_and(
+            osda_edges >= osda_offsets[i], osda_edges < osda_offsets[i + 1]
+        )
+        for i in range(len(num_osda) - 1)
+    ]
+    osda_indices.append(osda_edges >= osda_offsets[-1])
 
-                # Sort neighbors by distance to ensure we respect the max_neighbors constraint
-                neighbors = sorted(neighbors, key=lambda x: x.nn_distance)[
-                    : self.max_neighbors
-                ]
+    for idx, (zeo_i, osda_i) in enumerate(zip(zeolite_indices, osda_indices)):
+        zeolite_edges[zeo_i] += osda_offsets[idx] + num_osda[idx]
+        osda_edges[osda_i] += zeolite_offsets[idx]
 
-                # Collect valid edges and distances
-                for neighbor in neighbors:
-                    j = neighbor.index  # Index of the neighboring atom
-                    edges.append((i, j))
-
-            # Convert lists to numpy arrays
-            edges = torch.tensor(edges, dtype=torch.long, device=frac_coords.device).t()
-            edges += counter
-
-            # Append the edges to the list of all edges
-            all_edges.append(edges)
-
-            # Update the counter
-            counter += num_atoms_i
-
-        # Concatenate all edges
-        edges = torch.cat(all_edges, dim=1)
-
-        if self.use_log_map:
-            # this is the shortest torus distance, but DiffCSP didn't use it
-            # not sure it makes sense for the cartesian space version
-            frac_diff = FlatTorus01.logmap(frac_coords[edges[0]], frac_coords[edges[1]])
-        else:
-            frac_diff = frac_coords[edges[1]] - frac_coords[edges[0]]
-
-        return edges, -frac_diff
+    return torch.cat([osda_edges, zeolite_edges], dim=1)
 
 
 class DockCSPNet(CSPNet):
@@ -438,11 +415,13 @@ class DockCSPNet(CSPNet):
             torch.tensor(edge_feat_dims, device=t_emb.device) - 1
         )  # last index is the dummy index
 
+        osda_xt = batch.xt
+
         # create graph
         # for osda
         new_osda_edges, osda_frac_diff = self.gen_edges(
             batch.osda.num_atoms,
-            batch.osda.xt,
+            osda_xt,
             batch.lattices,
             batch.osda.batch,
             edge_style=self.edge_style,  # NOTE fc = fully connected
@@ -459,14 +438,11 @@ class DockCSPNet(CSPNet):
             [new_osda_edge_feats, osda_internal_edge_feats], dim=0
         )
 
-        distance_vectors = FlatTorus01.logmap(
-            batch.osda.xt[batch.osda.edge_index[0]],
-            batch.osda.xt[batch.osda.edge_index[1]],
+        osda_internal_frac_diff = FlatTorus01.logmap(
+            osda_xt[batch.osda.edge_index[0]],
+            osda_xt[batch.osda.edge_index[1]],
         )
-        osda_frac_diff = torch.cat([osda_frac_diff, distance_vectors], dim=0)
-
-        osda_internal_edge2graph = batch.osda.batch[osda_internal_edges[0]]
-        osda_edge2graph = batch.osda.batch[osda_edges[0]]
+        osda_frac_diff = torch.cat([osda_frac_diff, osda_internal_frac_diff], dim=0)
 
         # for zeolite
         zeolite_edges, zeolite_frac_diff = self.gen_edges(
@@ -477,7 +453,6 @@ class DockCSPNet(CSPNet):
             edge_style=self.edge_style,
             radius=2.5,
         )
-        zeolite_edge2graph = batch.zeolite.batch[zeolite_edges[0]]
 
         zeolite_edge_feats = dummy_edge_ids.repeat(zeolite_edges.shape[1], 1)
         zeolite_edge_feats = self.edge_embedding(zeolite_edge_feats)
@@ -485,10 +460,33 @@ class DockCSPNet(CSPNet):
         # for cross graph
         batch_size = max(batch.osda.batch.max(), batch.zeolite.batch.max()) + 1
         cross_num_atoms = batch.osda.num_atoms + batch.zeolite.num_atoms
+        cross_batch = torch.repeat_interleave(
+            torch.arange(batch_size, device=batch.zeolite.frac_coords.device),
+            cross_num_atoms,
+        ).to(batch.zeolite.frac_coords.device)
+
+        is_osda = [
+            torch.cat(
+                [
+                    torch.ones(
+                        batch.osda.num_atoms[i], dtype=torch.bool, device=osda_xt.device
+                    ),
+                    torch.zeros(
+                        batch.zeolite.num_atoms[i],
+                        dtype=torch.bool,
+                        device=osda_xt.device,
+                    ),
+                ],
+                dim=0,
+            )
+            for i in range(batch_size)
+        ]
+        is_osda = torch.cat(is_osda, dim=0)
+
         cross_frac_coords = [
             torch.cat(
                 [
-                    batch.osda.xt[batch.osda.batch == i],
+                    batch.xt[batch.osda.batch == i],
                     batch.zeolite.frac_coords[batch.zeolite.batch == i],
                 ],
                 dim=0,
@@ -496,30 +494,6 @@ class DockCSPNet(CSPNet):
             for i in range(batch_size)
         ]
         cross_frac_coords = torch.cat(cross_frac_coords, dim=0)
-        cross_batch = torch.repeat_interleave(
-            torch.arange(batch_size, device=cross_frac_coords.device), cross_num_atoms
-        ).to(cross_frac_coords.device)
-
-        # a mask indicating which nodes in the cross graph are osda nodes
-        osda_nodes_mask = [
-            torch.cat(
-                [
-                    torch.ones(
-                        (batch.osda.batch == i).sum(),
-                        device=batch.osda.xt.device,
-                        dtype=torch.bool,
-                    ),
-                    torch.zeros(
-                        (batch.zeolite.batch == i).sum(),
-                        device=batch.osda.xt.device,
-                        dtype=torch.bool,
-                    ),
-                ],
-                dim=0,
-            )
-            for i in range(batch_size)
-        ]
-        osda_nodes_mask = torch.cat(osda_nodes_mask, dim=0)
 
         # cross edges
         cross_edges, cross_frac_diff = self.gen_edges(
@@ -529,17 +503,21 @@ class DockCSPNet(CSPNet):
             cross_batch,
             edge_style=self.edge_style,
             radius=self.cutoff,
-            max_neighbors=20,
+            # max_neighbors=20,
         )
 
         # remove edges that are zeolite-zeolite or osda-osda
-        is_cross_edge = osda_nodes_mask[cross_edges[0]] & torch.logical_not(
-            osda_nodes_mask[cross_edges[1]]
+        osda_to_zeolite_edges = is_osda[cross_edges[0]] & torch.logical_not(
+            is_osda[cross_edges[1]]
         )
+        zeolite_to_osda_edges = is_osda[cross_edges[1]] & torch.logical_not(
+            is_osda[cross_edges[0]]
+        )
+
+        is_cross_edge = osda_to_zeolite_edges | zeolite_to_osda_edges
+
         cross_edges = cross_edges[:, is_cross_edge]
         cross_frac_diff = cross_frac_diff[is_cross_edge]
-
-        cross_edge2graph = cross_batch[cross_edges[0]]
 
         cross_edge_feats = dummy_edge_ids.repeat(cross_edges.shape[1], 1)
         cross_edge_feats = self.edge_embedding(cross_edge_feats)
@@ -566,71 +544,56 @@ class DockCSPNet(CSPNet):
         zeolite_node_features = torch.cat([zeolite_node_features, t_per_atom, be_per_atom], dim=1)
         zeolite_node_features = self.atom_latent_emb(zeolite_node_features)
 
+        node_features = [
+            torch.cat(
+                [
+                    osda_node_features[batch.osda.batch == i],
+                    zeolite_node_features[batch.zeolite.batch == i],
+                ],
+                dim=0,
+            )
+            for i in range(batch_size)
+        ]
+        node_features = torch.cat(node_features, dim=0)
+
+        osda_zeolite_merged = merge_edges(
+            batch.osda.num_atoms,
+            batch.zeolite.num_atoms,
+            osda_edges,
+            zeolite_edges,
+        )
+        edges = torch.cat([osda_zeolite_merged, cross_edges], dim=1)
+
+        edge_feats = torch.cat(
+            [osda_edge_feats, zeolite_edge_feats, cross_edge_feats], dim=0
+        )
+        frac_diff = torch.cat(
+            [osda_frac_diff, zeolite_frac_diff, cross_frac_diff], dim=0
+        )
+
+        edge2graph = cross_batch[edges[0]]
+
         for i in range(0, self.num_layers):
-            # update osda node feats based on internal bonds first
-            osda_node_features = self._modules["csp_layer_%d" % i](
-                osda_node_features,
-                batch.lattices,
-                osda_internal_edges,
-                osda_internal_edge2graph,
-                distance_vectors,
-                osda_internal_edge_feats,
-            )
-
-            # update zeolite node feats
-            zeolite_node_features = self._modules["csp_layer_%d" % i](
-                zeolite_node_features,
-                batch.lattices,
-                zeolite_edges,
-                zeolite_edge2graph,
-                zeolite_frac_diff,
-                zeolite_edge_feats,
-            )
-
-            # initialize cross node feats
-            cross_node_features = [
-                torch.cat(
-                    [
-                        osda_node_features[batch.osda.batch == i],
-                        zeolite_node_features[batch.zeolite.batch == i],
-                    ],
-                    dim=0,
-                )
-                for i in range(batch_size)
-            ]
-            cross_node_features = torch.cat(cross_node_features, dim=0)
-
-            # update cross node feats
-            cross_node_features = self._modules["csp_layer_%d" % i](
-                cross_node_features,
-                batch.lattices,
-                cross_edges,
-                cross_edge2graph,
-                cross_frac_diff,
-                cross_edge_feats,
-            )
-
-            # extract osda node feats from cross node feats
-            osda_node_features = cross_node_features[osda_nodes_mask]
-            zeolite_node_features = cross_node_features[
-                torch.logical_not(osda_nodes_mask)
-            ]
-
             # update osda node feats
-            osda_node_features = self._modules["csp_layer_%d" % i](
-                osda_node_features,
+            node_features = self._modules["csp_layer_%d" % i](
+                node_features,
                 batch.lattices,
-                osda_edges,
-                osda_edge2graph,
-                osda_frac_diff,
-                osda_edge_feats,
+                edges,
+                edge2graph,
+                frac_diff,
+                edge_feats,
             )
 
         if self.ln:
-            osda_node_features = self.final_layer_norm(osda_node_features)
+            node_features = self.final_layer_norm(node_features)
+
+        # extract osda node feats from cross node feats
+        # osda_node_features = node_features[osda_nodes_mask]
 
         # predict coords
-        coord_out = self.coord_out(osda_node_features)
+        # coord_out = self.coord_out(osda_node_features)
+
+        coord_out = self.coord_out(node_features[is_osda])
 
         # predict binding energy TODO mrx add more options
         osda_node_features = scatter(
@@ -784,8 +747,6 @@ class ProjectedConjugatedCSPNet(nn.Module):
             guid_strength_tot = guidance_strength + 1 
             be = be / guid_strength_tot + guid_be * guidance_strength / guid_strength_tot # TODO mrx add options
 
-
-        # NOTE comment out to predict position directly
         v = manifold.proju(x, v)
 
         if self.metric_normalized and hasattr(manifold, "metric_normalized"):
@@ -803,32 +764,34 @@ class DockProjectedConjugatedCSPNet(ProjectedConjugatedCSPNet):
         cond_be: torch.Tensor | None,
     ) -> ManifoldGetterOut:
         # handle osda first
-        osda_frac_coords = self.manifold_getter.flatrep_to_georep(
+        frac_coords = self.manifold_getter.flatrep_to_georep(
             x,
-            dims=batch.osda.dims,
-            mask_f=batch.osda.mask_f,
+            dims=batch.dims,
+            mask_f=batch.mask_f,
         )
-        batch.osda.xt = osda_frac_coords.f
+        batch.xt = frac_coords.f
 
         if self.self_cond:
             if cond_coords is not None:
                 fc_cond = self.manifold_getter.flatrep_to_georep(
                     cond_coords,
-                    dims=batch.osda.dims,
-                    mask_f=batch.osda.mask_f,
+                    dims=batch.dims,
+                    mask_f=batch.mask_f,
                 )
                 fc_cond = fc_cond.f
 
             else:
+
                 fc_cond = torch.zeros_like(batch.osda.xt)
             
             if cond_be is None: 
                 cond_be = torch.zeros_like(batch.y['bindingatoms'])
 
-            batch.osda.xt = torch.cat([batch.osda.xt, fc_cond], dim=-1)
+            batch.xt = torch.cat([batch.xt, fc_cond], dim=-1)
             batch.y['bindingatoms'] = torch.cat(
                 [batch.y['bindingatoms'], cond_be], dim=-1
             )
+
 
         coord_out, be_out = self.cspnet(
             batch,
@@ -836,7 +799,7 @@ class DockProjectedConjugatedCSPNet(ProjectedConjugatedCSPNet):
         )
 
         return self.manifold_getter.georep_to_flatrep(
-            batch=batch.osda.batch,
+            batch=batch.batch,
             frac_coords=coord_out,
             split_manifold=False,
         ), be_out

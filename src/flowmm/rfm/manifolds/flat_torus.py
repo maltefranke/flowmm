@@ -149,12 +149,13 @@ class MaskedNoDriftFlatTorus01(MaskedManifold, FlatTorus01):
 
         # remove the drift
         # regular minus is okay since the tangent space is euclidean
-        mean = torch.sum(
+        """mean = torch.sum(
             u,
             dim=-2,
             keepdim=True,
         ) / self.mask.to(u).sum(dim=[-2, -1])
-        out = u - mean
+        out = u - mean"""
+        out = u
         out = self.mask_and_reshape(initial_shape, out)
         return super().proju(x, out)
 
