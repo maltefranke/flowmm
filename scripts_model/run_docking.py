@@ -19,6 +19,7 @@ from pytorch_lightning.callbacks import (
     ModelCheckpoint,
 )
 from pytorch_lightning.loggers import WandbLogger
+from hydra.utils import get_class
 
 import wandb
 from diffcsp.common.utils import log_hyperparameters
@@ -129,7 +130,7 @@ def run(cfg: DictConfig) -> None:
     )
 
     # Instantiate model
-    get_model = DockingRFMLitModule  # DockThenOptimizeRFMLitModule
+    get_model = get_class(cfg.vectorfield.module._target_)
     hydra.utils.log.info(f"Instantiating <{get_model}>")
     model = get_model(cfg)
 
@@ -170,6 +171,10 @@ def run(cfg: DictConfig) -> None:
         ckpt = None
 
     hydra.utils.log.info("Instantiating the Trainer")
+    if cfg.train.pl_trainer.strategy == "ddp":
+        strategy = DDPStrategy(find_unused_parameters=False)
+    else:
+        strategy = None
     trainer = pl.Trainer(
         # default_root_dir=hydra_dir,
         logger=wandb_logger,
@@ -178,7 +183,7 @@ def run(cfg: DictConfig) -> None:
         check_val_every_n_epoch=cfg.logging.val_check_interval,
         # progress_bar_refresh_rate=cfg.logging.progress_bar_refresh_rate,
         resume_from_checkpoint=ckpt,
-        strategy=DDPStrategy(find_unused_parameters=False),
+        strategy=strategy,
         **cfg.train.pl_trainer,
     )
 

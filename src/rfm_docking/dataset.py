@@ -140,7 +140,11 @@ def process_one(args):
     )
     opt_osda_graph_arrays = build_crystal_graph(opt_osda, graph_method)
 
-    properties = {k: row[k] for k in prop_list if k in row.keys()}
+    properties = dict() 
+    for k in prop_list:
+        if k in row.keys():
+            properties[k] = torch.tensor(row[k], dtype=torch.float64)
+    
     preprocessed_dict = {
         "crystal_id": crystal_id,
         "smiles": smiles,
@@ -183,6 +187,9 @@ def custom_preprocess(
             ):
                 yield item
 
+    # NOTE uncomment to debug process_one
+    # process_one((df.iloc[0], graph_method, prop_list))
+    
     # Convert the unordered results to a list
     unordered_results = list(parallelized())
 
@@ -230,6 +237,7 @@ class CustomCrystDataset(Dataset):
         tolerance: ValueNode,
         use_space_group: ValueNode,
         use_pos_index: ValueNode,
+        task: ValueNode,
         **kwargs,
     ):
         super().__init__()
@@ -244,12 +252,13 @@ class CustomCrystDataset(Dataset):
         self.use_space_group = use_space_group
         self.use_pos_index = use_pos_index
         self.tolerance = tolerance
+        self.task = task
 
         node_feat_dims, edge_feat_dims = get_feature_dims()
         self.node_feat_dims = node_feat_dims
         self.edge_feat_dims = edge_feat_dims
 
-        self.preprocess(save_path, preprocess_workers, prop)
+        self.preprocess(save_path, preprocess_workers, prop) # prop = ['bindingatoms']
 
         # add_scaled_lattice_prop(self.cached_data, lattice_scale_method)
         # TODO not sure if how to scale osda lattice - should it be different from zeolite, or scale their combined cell?
@@ -260,12 +269,13 @@ class CustomCrystDataset(Dataset):
             self.cached_data, lattice_scale_method, "dock_osda_graph_arrays"
         )
 
-        custom_add_scaled_lattice_prop(
-            self.cached_data, lattice_scale_method, "opt_zeolite_graph_arrays"
-        )
-        custom_add_scaled_lattice_prop(
-            self.cached_data, lattice_scale_method, "opt_osda_graph_arrays"
-        )
+        if "optimize" in task:
+            custom_add_scaled_lattice_prop(
+                self.cached_data, lattice_scale_method, "opt_zeolite_graph_arrays"
+            )
+            custom_add_scaled_lattice_prop(
+                self.cached_data, lattice_scale_method, "opt_osda_graph_arrays"
+            )
 
         self.lattice_scaler = None
         self.scaler = None
@@ -280,11 +290,11 @@ class CustomCrystDataset(Dataset):
                 niggli=self.niggli,
                 primitive=self.primitive,
                 graph_method=self.graph_method,
-                prop_list=[prop],
+                prop_list=prop, 
                 use_space_group=self.use_space_group,
                 tol=self.tolerance,
             )
-
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
             torch.save(cached_data, save_path)
             self.cached_data = cached_data
 
@@ -295,7 +305,10 @@ class CustomCrystDataset(Dataset):
         data_dict = self.cached_data[index]
 
         # scaler is set in DataModule set stage
-        prop = self.scaler.transform(data_dict[self.prop])
+        prop = dict()
+        for p in self.prop: 
+            # print(p, type(data_dict[p]))
+            prop[p] = self.scaler[p].transform(data_dict[p]).view(1, -1)
         (
             frac_coords,
             atom_types,
@@ -327,7 +340,7 @@ class CustomCrystDataset(Dataset):
             num_atoms=num_atoms,
             num_bonds=osda_edge_indices.shape[0],
             num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
-            y=prop.view(1, -1),
+            # y=prop.view(1, -1), # TODO mrx prop is now a dict so this will fail
         )
 
         (
@@ -357,71 +370,71 @@ class CustomCrystDataset(Dataset):
             num_atoms=num_atoms,
             num_bonds=edge_indices.shape[0],
             num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
-            y=prop.view(1, -1),
         )
 
-        (
-            frac_coords,
-            atom_types,
-            lengths,
-            angles,
-            edge_indices,  # NOTE edge indices will be overwritten with rdkit featurization
-            _,  # to_jimages,
-            num_atoms,
-        ) = data_dict["opt_osda_graph_arrays"]
+        if "optimize" in self.task:
+            (
+                frac_coords,
+                atom_types,
+                lengths,
+                angles,
+                edge_indices,  # NOTE edge indices will be overwritten with rdkit featurization
+                _,  # to_jimages,
+                num_atoms,
+            ) = data_dict["opt_osda_graph_arrays"]
 
-        osda_data_opt = Data(
-            frac_coords=torch.Tensor(frac_coords),
-            atom_types=torch.LongTensor(atom_types),
-            lengths=torch.Tensor(lengths).view(1, -1),
-            angles=torch.Tensor(angles).view(1, -1),
-            edge_index=torch.LongTensor(
-                osda_edge_indices
-            ).contiguous(),  # shape (2, num_edges)
-            edge_feats=osda_edge_feats,
-            node_feats=osda_node_feats,
-            num_atoms=num_atoms,
-            num_bonds=osda_edge_indices.shape[0],
-            num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
-            y=prop.view(1, -1),
-        )
+            osda_data_opt = Data(
+                frac_coords=torch.Tensor(frac_coords),
+                atom_types=torch.LongTensor(atom_types),
+                lengths=torch.Tensor(lengths).view(1, -1),
+                angles=torch.Tensor(angles).view(1, -1),
+                edge_index=torch.LongTensor(
+                    osda_edge_indices
+                ).contiguous(),  # shape (2, num_edges)
+                edge_feats=osda_edge_feats,
+                node_feats=osda_node_feats,
+                num_atoms=num_atoms,
+                num_bonds=osda_edge_indices.shape[0],
+                num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
+            )
 
-        (
-            frac_coords,
-            atom_types,
-            lengths,
-            angles,
-            edge_indices,
-            _,  # to_jimages,
-            num_atoms,
-        ) = data_dict["opt_zeolite_graph_arrays"]
+            (
+                frac_coords,
+                atom_types,
+                lengths,
+                angles,
+                edge_indices,
+                _,  # to_jimages,
+                num_atoms,
+            ) = data_dict["opt_zeolite_graph_arrays"]
 
-        zeolite_data_opt = Data(
-            frac_coords=torch.Tensor(frac_coords),
-            atom_types=torch.LongTensor(atom_types),
-            lengths=torch.Tensor(lengths).view(1, -1),
-            angles=torch.Tensor(angles).view(1, -1),
-            edge_index=torch.LongTensor(
-                edge_indices.T
-            ).contiguous(),  # shape (2, num_edges)
-            node_feats=zeolite_node_feats,
-            num_atoms=num_atoms,
-            num_bonds=edge_indices.shape[0],
-            num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
-            y=prop.view(1, -1),
-        )
+            zeolite_data_opt = Data(
+                frac_coords=torch.Tensor(frac_coords),
+                atom_types=torch.LongTensor(atom_types),
+                lengths=torch.Tensor(lengths).view(1, -1),
+                angles=torch.Tensor(angles).view(1, -1),
+                edge_index=torch.LongTensor(
+                    edge_indices.T
+                ).contiguous(),  # shape (2, num_edges)
+                node_feats=zeolite_node_feats,
+                num_atoms=num_atoms,
+                num_bonds=edge_indices.shape[0],
+                num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
+            )
 
         data = HeteroData()
         data.crystal_id = data_dict["crystal_id"]
         data.smiles = smiles
         data.loading = loading
         data.osda = osda_data
-        data.osda_opt = osda_data_opt
         data.zeolite = zeolite_data
-        data.zeolite_opt = zeolite_data_opt
+        if "optimize" in self.task:
+            data.osda_opt = osda_data_opt
+            data.zeolite_opt = zeolite_data_opt
         data.num_atoms = osda_data.num_atoms + zeolite_data.num_atoms
         data.lengths = data.zeolite.lengths
         data.angles = data.zeolite.angles
+        data.y = prop # NOTE dictionary
 
         return data
 
