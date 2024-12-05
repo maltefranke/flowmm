@@ -93,3 +93,5 @@ datamodule:
     _target_: src.rfm_docking.dock.collate.DockCollater
 
   do_ot: false
+
+  sampling: ${train.sampling}

@@ -39,6 +39,7 @@ train:
   # reproducibility
   deterministic: warn
   random_seed: 42
+  sampling: harmonic
 
   # training
   pl_trainer:

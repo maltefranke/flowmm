@@ -47,6 +47,7 @@ class CrystDataModule(pl.LightningDataModule):
         dataset_name: str,
         collate: DictConfig,
         do_ot: bool,
+        sampling: str,
         scaler_path=None,
     ):
         super().__init__()
@@ -67,7 +68,7 @@ class CrystDataModule(pl.LightningDataModule):
         # ...
         collate_class = get_class(collate._target_)
         self.collate_fn = collate_class(
-            manifold_getter=self.manifold_getter, do_ot=do_ot
+            manifold_getter=self.manifold_getter, do_ot=do_ot, sampling=sampling
         )
 
         self.get_scaler(scaler_path)
@@ -87,21 +88,27 @@ class CrystDataModule(pl.LightningDataModule):
                 train_dataset.cached_data, key="scaled_lattice"
             )
             for prop in train_dataset.prop:
-                self.scaler[prop] = get_scaler_from_data_list(train_dataset.cached_data, key=prop)
+                self.scaler[prop] = get_scaler_from_data_list(
+                    train_dataset.cached_data, key=prop
+                )
         else:
             try:
                 self.lattice_scaler = torch.load(
                     Path(scaler_path) / "lattice_scaler.pt"
                 )
                 for prop in train_dataset.prop:
-                    self.scaler[prop] = torch.load(Path(scaler_path) / f"prop_{prop}_scaler.pt")
+                    self.scaler[prop] = torch.load(
+                        Path(scaler_path) / f"prop_{prop}_scaler.pt"
+                    )
             except:
                 train_dataset = hydra.utils.instantiate(self.datasets.train)
                 self.lattice_scaler = get_scaler_from_data_list(
                     train_dataset.cached_data, key="scaled_lattice"
                 )
                 for prop in train_dataset.prop:
-                    self.scaler[prop] = get_scaler_from_data_list(train_dataset.cached_data, key=prop)
+                    self.scaler[prop] = get_scaler_from_data_list(
+                        train_dataset.cached_data, key=prop
+                    )
 
     def setup(self, stage: Optional[str] = None):
         """

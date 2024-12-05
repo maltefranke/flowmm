@@ -14,14 +14,17 @@ from src.flowmm.rfm.manifolds.flat_torus import FlatTorus01
 
 
 def dock_collate_fn(
-    batch: list[HeteroData], manifold_getter: DockingManifoldGetter, do_ot: bool = False
+    batch: list[HeteroData],
+    manifold_getter: DockingManifoldGetter,
+    do_ot: bool = False,
+    sampling="normal",
 ) -> HeteroData:
     """Where the magic happens"""
 
     batch = Batch.from_data_list(batch)
 
     # batch data
-    y = batch.y # NOTE dictionary of properties
+    y = batch.y  # NOTE dictionary of properties
     osda = batch.osda
     zeolite = batch.zeolite
 
@@ -58,7 +61,7 @@ def dock_collate_fn(
     x0 = osda_manifold.random(*x1.shape, dtype=x1.dtype, device=x1.device)
 
     # harmonic prior
-    def sample(sampling="normal"):
+    def sample(sampling):
         if "sampling" == "normal":
             x0 = osda_manifold.random(*x1.shape, dtype=x1.dtype, device=x1.device)
             return x0
@@ -79,7 +82,7 @@ def dock_collate_fn(
         x0 = osda_manifold.projx(x0)
         return x0
 
-    x0 = sample()
+    x0 = sample(sampling=sampling)
 
     # lattices is the invariant(!!) representation of the lattice, parametrized by lengths and angles
     lattices = torch.cat([osda.lengths, osda.angles], dim=-1)
@@ -127,9 +130,15 @@ def dock_collate_fn(
 
 
 class DockCollater:
-    def __init__(self, manifold_getter: DockingManifoldGetter, do_ot: bool = False):
+    def __init__(
+        self,
+        manifold_getter: DockingManifoldGetter,
+        do_ot: bool = False,
+        sampling: str = "normal",
+    ):
         self.manifold_getter = manifold_getter
         self.do_ot = do_ot
+        self.sampling = sampling
 
     def __call__(self, batch: list[HeteroData]) -> HeteroData:
-        return dock_collate_fn(batch, self.manifold_getter, self.do_ot)
+        return dock_collate_fn(batch, self.manifold_getter, self.do_ot, self.sampling)
