@@ -171,7 +171,7 @@ def run(cfg: DictConfig) -> None:
         ckpt = None
 
     hydra.utils.log.info("Instantiating the Trainer")
-    if cfg.train.pl_trainer.strategy == "ddp":
+    if cfg.train.strategy == "ddp":
         strategy = DDPStrategy(find_unused_parameters=False)
     else:
         strategy = None

@@ -6,7 +6,7 @@ core:
 
 logging:
   # log frequency
-  val_check_interval: 1
+  val_check_interval: 10
   wandb:
     project: rfmcsp-${model.target_distribution}-${hydra:runtime.choices.data}
     entity: null
@@ -26,12 +26,12 @@ optim:
   # RFM
   optimizer:
     _target_: torch.optim.AdamW
-    lr: 1e-3
+    lr: 1e-1
     weight_decay: 0.0
   lr_scheduler:
     _target_: torch.optim.lr_scheduler.CosineAnnealingLR
     T_max: ${data.train_max_epochs}
-    eta_min: 1e-5
+    eta_min: 5e-3
   interval: epoch
   ema_decay: 0.999
 
@@ -40,13 +40,13 @@ train:
   deterministic: warn
   random_seed: 42
   sampling: harmonic
-
+  strategy: ddp
+  
   # training
   pl_trainer:
     fast_dev_run: False # Enable this for debug purposes
-    # strategy: ddp
-    # devices: auto
-    devices: 1
+    devices: auto
+    # devices: 1
     accelerator: gpu
     precision: 32
     # max_steps: 10000
@@ -56,8 +56,7 @@ train:
     gradient_clip_val: 100
     gradient_clip_algorithm: value
     profiler: simple
-    strategy: ddp
-
+    
   monitor_metric: "val/loss"  # "val/nll"
   monitor_metric_mode: min
 
@@ -86,7 +85,7 @@ test:
 integrate:
   div_mode: rademacher  # "exact" is an alternative
   method: euler # heun
-  num_steps: 10 # 0_100 
+  num_steps: 100 # 0_100 
   normalize_loglik: True  # this is normalized by dimension
   inference_anneal_slope: 0.0
   inference_anneal_offset: 0.0
