@@ -179,7 +179,7 @@ class DockingRFMLitModule(ManifoldFMLitModule):
         x0: torch.Tensor = None,
         num_steps: int = 1_000,
         entire_traj: bool = False,
-        guidance_strength: float = 0.0, 
+        guidance_strength: float = 0.0,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         (
             x1,
@@ -291,7 +291,7 @@ class DockingRFMLitModule(ManifoldFMLitModule):
 
         vecfield = partial(
             self.vecfield,
-            batch=batch, # NOTE assumes batch carries non-zero conditions
+            batch=batch,  # NOTE assumes batch carries non-zero conditions
             guidance_strength=guidance_strength,
         )
 
@@ -310,22 +310,28 @@ class DockingRFMLitModule(ManifoldFMLitModule):
         )
 
         def scheduled_fn_to_integrate(
-            t: torch.Tensor, 
-            x: torch.Tensor, 
-            cond_coords: torch.Tensor | None = None, 
-            cond_be: torch.Tensor | None = None, 
+            t: torch.Tensor,
+            x: torch.Tensor,
+            cond_coords: torch.Tensor | None = None,
+            cond_be: torch.Tensor | None = None,
         ) -> torch.Tensor:
             anneal_factor = self._annealing_schedule(t, c, b)
             out = vecfield(
                 t=torch.atleast_2d(t),
                 x=torch.atleast_2d(x),
                 manifold=manifold,
-                cond_coords=torch.atleast_2d(cond_coords) if isinstance(cond_coords, torch.Tensor) else cond_coords,
-                cond_be=torch.atleast_2d(cond_be) if isinstance(cond_be, torch.Tensor) else cond_be,
+                cond_coords=torch.atleast_2d(cond_coords)
+                if isinstance(cond_coords, torch.Tensor)
+                else cond_coords,
+                cond_be=torch.atleast_2d(cond_be)
+                if isinstance(cond_be, torch.Tensor)
+                else cond_be,
             )
             if anneal_coords:
-                out[0][:, 0 : dims.f].mul_(anneal_factor) # NOTE anneal only the coordinates, not the binding energy
-            
+                out[0][:, 0 : dims.f].mul_(
+                    anneal_factor
+                )  # NOTE anneal only the coordinates, not the binding energy
+
             return out
 
         if self.cfg.model.get("self_cond", False):  # TODO mrx ignoring for now
@@ -343,11 +349,13 @@ class DockingRFMLitModule(ManifoldFMLitModule):
             )
             return x1
 
-        elif entire_traj or compute_traj_velo_norms: 
-            print(f"finish_sampling, {entire_traj} or {compute_traj_velo_norms}") # TODO mrx True, False
+        elif entire_traj or compute_traj_velo_norms:
+            print(
+                f"finish_sampling, {entire_traj} or {compute_traj_velo_norms}"
+            )  # TODO mrx True, False
             xs, vs = projx_integrator(
                 manifold,
-                scheduled_fn_to_integrate, # NOTE odefunc
+                scheduled_fn_to_integrate,  # NOTE odefunc
                 x0,
                 t=torch.linspace(0, 1, num_steps + 1).to(x0.device),
                 method=self.cfg.integrate.get("method", "euler"),
@@ -355,7 +363,7 @@ class DockingRFMLitModule(ManifoldFMLitModule):
                 pbar=True,
             )
         else:
-            print("finish_sampling, else") # TODO mrx ignore for now
+            print("finish_sampling, else")  # TODO mrx ignore for now
             x1 = projx_integrator_return_last(
                 manifold,
                 scheduled_fn_to_integrate,
@@ -368,7 +376,7 @@ class DockingRFMLitModule(ManifoldFMLitModule):
             )
             return x1
 
-        if compute_traj_velo_norms: # TODO mrx ignore for now
+        if compute_traj_velo_norms:  # TODO mrx ignore for now
             print("finish_sampling, compute_traj_velo_norms True")
             s = 0
             e = dims.f
@@ -376,7 +384,12 @@ class DockingRFMLitModule(ManifoldFMLitModule):
                 xs[..., s:e], vs[..., s:e], vs[..., s:e], data_in_dim=1
             )
 
-        print("finish_sampling entire_traj", entire_traj, "compute_traj_velo_norms", compute_traj_velo_norms)
+        print(
+            "finish_sampling entire_traj",
+            entire_traj,
+            "compute_traj_velo_norms",
+            compute_traj_velo_norms,
+        )
         if entire_traj and compute_traj_velo_norms:
             # return xs, norm_a, norm_f, norm_l
             return xs, norm_f
@@ -540,28 +553,20 @@ class DockingRFMLitModule(ManifoldFMLitModule):
             cond_coords=cond_coords,
             cond_be=cond_be,
         )
-        # maybe adjust the target
         diff = u_t_pred - u_t
-        # diff = FlatTorus01.logmap(u_t_pred, x1).abs()  # NOTE predict coordinate
-        # loss_f = diff.mean()
 
         max_num_atoms = batch.mask_f.size(-1)
         dim_f_per_atom = batch.dims.f / max_num_atoms
 
-        s = 0
-        e = batch.dims.f
         # loss for each example in batch
-        loss_f = (
-            batch.f_manifold.inner(x_t[:, s:e], diff[:, s:e], diff[:, s:e])
-            / dim_f_per_atom
-        )
+        loss_f = batch.f_manifold.inner(x_t, diff, diff) / dim_f_per_atom
         loss_f = loss_f.mean()
         # per dim, already per atom
 
         loss = self.costs["loss_f"] * loss_f
 
-        # binding energy loss TODO mrx add more flexibility to try different losses 
-        be_loss = torch.nn.functional.mse_loss(be_pred[s:e], batch.y['bindingatoms']) 
+        # binding energy loss TODO mrx add more flexibility to try different losses
+        be_loss = torch.nn.functional.mse_loss(be_pred, batch.y["bindingatoms"])
         return {
             "loss": loss,
             "loss_f": self.costs["loss_f"] * loss_f,
@@ -668,8 +673,8 @@ class DockingRFMLitModule(ManifoldFMLitModule):
             on_step=False,
             on_epoch=True,
             prog_bar=False,
-            batch_size=len(batch)
-            )
+            batch_size=len(batch),
+        )
         return out
 
     def compute_reconstruction(
@@ -990,14 +995,14 @@ class DockingRFMLitModule(ManifoldFMLitModule):
         start_time = time.time()
         if not hasattr(batch, "frac_coords"):
             if self.cfg.integrate.get("entire_traj", False):
-                print("predict_step compute_gen_trajectory") 
+                print("predict_step compute_gen_trajectory")
                 out = self.compute_gen_trajectory(
                     batch,
                     dim_coords=self.cfg.data.get("dim_coords", 3),
                     num_steps=self.cfg.integrate.get("num_steps", 1_000),
                 )
             else:
-                print("predict_step compute_generation") # TODO mrx ignore for now
+                print("predict_step compute_generation")  # TODO mrx ignore for now
                 out = self.compute_generation(
                     batch,
                     dim_coords=self.cfg.data.get("dim_coords", 3),
@@ -1006,13 +1011,15 @@ class DockingRFMLitModule(ManifoldFMLitModule):
         else:
             # not generating or predicting new structures
             if self.cfg.integrate.get("entire_traj", False):
-                print("predict_step compute_recon_trajectory") # TODO mrx ignore for now
+                print(
+                    "predict_step compute_recon_trajectory"
+                )  # TODO mrx ignore for now
                 out = self.compute_recon_trajectory(
                     batch,
                     num_steps=self.cfg.integrate.get("num_steps", 1_000),
                 )
             else:
-                print("predict_step compute_reconstruction") # TODO mrx ignore for now
+                print("predict_step compute_reconstruction")  # TODO mrx ignore for now
                 out = self.compute_reconstruction(
                     batch,
                     num_steps=self.cfg.integrate.get("num_steps", 1_000),
