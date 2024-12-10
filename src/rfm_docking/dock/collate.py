@@ -57,10 +57,6 @@ def dock_collate_fn(
     zeolite.dims = zeolite_dims
     zeolite.mask_f = zeolite_mask_f
 
-    # sample mol in fractional space
-    x0 = osda_manifold.random(*x1.shape, dtype=x1.dtype, device=x1.device)
-
-    # harmonic prior
     def sample(sampling):
         if "sampling" == "normal":
             x0 = osda_manifold.random(*x1.shape, dtype=x1.dtype, device=x1.device)
@@ -69,7 +65,7 @@ def dock_collate_fn(
         elif sampling == "harmonic":
             x0 = sample_harmonic_prior(osda, sigma=0.15)
         elif sampling == "uniform":
-            x0 = sample_uniform(osda, batch.loading)
+            x0 = torch.rand_like(osda.frac_coords)
         elif sampling == "uniform_then_gaussian":
             x0 = sample_uniform_then_gaussian(osda, batch.loading, sigma=0.05)
         elif sampling == "uniform_then_conformer":

@@ -178,6 +178,9 @@ class CSPLayer(DiffCSPLayer):
 class CSPNet(DiffCSPNet):
     def __init__(
         self,
+        zeolite_edges: dict,
+        osda_edges: dict,
+        cross_edges: dict,
         hidden_dim: int = 512,
         time_dim: int = 256,
         num_layers: int = 6,
@@ -185,16 +188,12 @@ class CSPNet(DiffCSPNet):
         dis_emb: str = "sin",
         n_space: int = 3,
         num_freqs: int = 128,
-        edge_style: str = "fc",
-        cutoff: float = 7.0,
-        max_neighbors: int = 20,
         ln: bool = True,
         use_log_map: bool = True,
-        dim_atomic_rep: int = NUM_ATOMIC_TYPES,
         self_edges: bool = True,
         self_cond: bool = False,
-        be_dim: int = 256, 
-        drop_be_prob: float = 0.0, 
+        be_dim: int = 256,
+        drop_be_prob: float = 0.0,
     ):
         nn.Module.__init__(self)
 
@@ -202,7 +201,7 @@ class CSPNet(DiffCSPNet):
         self.time_emb = nn.Linear(1, time_dim, bias=False)
         self.be_emb = nn.Linear(1, be_dim, bias=False)
         self.drop_be_prob = drop_be_prob
-        
+
         self.hidden_dim = hidden_dim
 
         self.self_cond = self_cond
@@ -258,14 +257,23 @@ class CSPNet(DiffCSPNet):
         # readout block for binding energy. TODO mrx add options: : osda only, zeolite only, osda concat zeolite, osda + zeolite. Check padding as well
         self.be_out = nn.Linear(hidden_dim, 1, bias=True)
 
-        self.cutoff = cutoff
-        self.max_neighbors = max_neighbors
         self.ln = ln
-        self.edge_style = edge_style
         self.use_log_map = use_log_map
         if self.ln:
             self.final_layer_norm = nn.LayerNorm(hidden_dim)
         self.self_edges = self_edges
+
+        self.zeolite_max_neighbors = zeolite_edges["max_neighbors"]
+        self.zeolite_edge_style = zeolite_edges["edge_style"]
+        self.zeolite_cutoff = zeolite_edges["cutoff"]
+
+        self.osda_max_neighbors = osda_edges["max_neighbors"]
+        self.osda_edge_style = osda_edges["edge_style"]
+        self.osda_cutoff = osda_edges["cutoff"]
+
+        self.cross_max_neighbors = cross_edges["max_neighbors"]
+        self.cross_edge_style = cross_edges["edge_style"]
+        self.cross_cutoff = cross_edges["cutoff"]
 
     def gen_edges(
         self,
@@ -275,7 +283,7 @@ class CSPNet(DiffCSPNet):
         node2graph,
         edge_style="knn",
         radius=7.0,
-        max_neighbors=None,
+        max_neighbors=15,
     ):
         if edge_style == "fc":
             if self.self_edges:
@@ -315,7 +323,7 @@ class CSPNet(DiffCSPNet):
                     None,
                     num_atoms[i].view(-1).to(cart_coords.device),
                     radius,
-                    max_neighbors if max_neighbors is not None else self.max_neighbors,
+                    max_neighbors,
                     device=cart_coords.device,
                     lattices=lattice.view(1, 3, 3),
                 )
@@ -398,18 +406,16 @@ class DockCSPNet(CSPNet):
             batch.osda.num_atoms.shape[0], -1
         )  # if there is a single t, repeat for the batch
 
-        be_in = batch.y["bindingatoms"].float() 
-        with torch.no_grad(): 
+        be_in = batch.y["bindingatoms"].float()
+        with torch.no_grad():
             be_in = torch.where(
                 torch.rand_like(be_in) < self.drop_be_prob,
                 torch.zeros_like(be_in),
                 be_in,
             )
         be_emb = self.be_emb(be_in.view(-1, 1))
-        be_emb = be_emb.expand(
-            batch.osda.num_atoms.shape[0], -1
-        )  
-        
+        be_emb = be_emb.expand(batch.osda.num_atoms.shape[0], -1)
+
         edge_feat_dims = get_feature_dims()[-1]
         dummy_edge_ids = (
             torch.tensor(edge_feat_dims, device=t_emb.device) - 1
@@ -424,8 +430,9 @@ class DockCSPNet(CSPNet):
             osda_xt,
             batch.lattices,
             batch.osda.batch,
-            edge_style=self.edge_style,  # NOTE fc = fully connected
-            radius=self.cutoff,
+            edge_style=self.osda_edge_style,  # NOTE fc = fully connected
+            radius=self.osda_cutoff,
+            max_neighbors=self.osda_max_neighbors,
         )
         new_osda_edge_feats = dummy_edge_ids.repeat(new_osda_edges.shape[1], 1)
         new_osda_edge_feats = self.edge_embedding(new_osda_edge_feats)
@@ -450,8 +457,9 @@ class DockCSPNet(CSPNet):
             batch.zeolite.frac_coords,
             batch.lattices,
             batch.zeolite.batch,
-            edge_style=self.edge_style,
-            radius=2.5,
+            edge_style=self.zeolite_edge_style,
+            radius=self.zeolite_cutoff,
+            max_neighbors=self.zeolite_max_neighbors,
         )
 
         zeolite_edge_feats = dummy_edge_ids.repeat(zeolite_edges.shape[1], 1)
@@ -501,9 +509,9 @@ class DockCSPNet(CSPNet):
             cross_frac_coords,
             batch.lattices,
             cross_batch,
-            edge_style=self.edge_style,
-            radius=self.cutoff,
-            # max_neighbors=20,
+            edge_style=self.cross_edge_style,
+            radius=self.cross_cutoff,
+            max_neighbors=self.cross_max_neighbors,
         )
 
         # remove edges that are zeolite-zeolite or osda-osda
@@ -530,8 +538,15 @@ class DockCSPNet(CSPNet):
         )
         be_per_atom = be_emb.repeat_interleave(
             batch.osda.num_atoms.to(t_emb.device), dim=0
-        )      
-        osda_node_features = torch.cat([osda_node_features, t_per_atom, be_per_atom,], dim=1,)
+        )
+        osda_node_features = torch.cat(
+            [
+                osda_node_features,
+                t_per_atom,
+                be_per_atom,
+            ],
+            dim=1,
+        )
         osda_node_features = self.atom_latent_emb(osda_node_features)
 
         zeolite_node_features = self.node_embedding(batch.zeolite.node_feats)
@@ -541,7 +556,9 @@ class DockCSPNet(CSPNet):
         be_per_atom = be_emb.repeat_interleave(
             batch.zeolite.num_atoms.to(t_emb.device), dim=0
         )
-        zeolite_node_features = torch.cat([zeolite_node_features, t_per_atom, be_per_atom], dim=1)
+        zeolite_node_features = torch.cat(
+            [zeolite_node_features, t_per_atom, be_per_atom], dim=1
+        )
         zeolite_node_features = self.atom_latent_emb(zeolite_node_features)
 
         node_features = [
@@ -601,7 +618,7 @@ class DockCSPNet(CSPNet):
             batch.osda.batch,
             dim=0,
             reduce="mean",
-            )
+        )
         be_out = self.be_out(osda_node_features)
 
         return coord_out, be_out
@@ -715,7 +732,7 @@ class ProjectedConjugatedCSPNet(nn.Module):
         manifold: Manifold,
         cond_coords: torch.Tensor | None = None,
         cond_be: torch.Tensor | None = None,
-        guidance_strength = 0.0, 
+        guidance_strength=0.0,
     ) -> torch.Tensor:
         """u_t: [0, 1] x M -> T M
 
@@ -725,27 +742,19 @@ class ProjectedConjugatedCSPNet(nn.Module):
         x = manifold.projx(x)
         if cond_coords is not None:
             cond_coords = manifold.projx(cond_coords)
-        (v, *_), be = self._conjugated_forward(
-            batch,
-            t,
-            x,
-            cond_coords,
-            cond_be
-        )
+        (v, *_), be = self._conjugated_forward(batch, t, x, cond_coords, cond_be)
 
-        if guidance_strength == 0.0: 
+        if guidance_strength == 0.0:
             for prop in batch.y.keys():
                 batch.y[prop] = torch.zeros_like(batch.y[prop]).to(x.device)
             (guid_v, *guid_), guid_be = self._conjugated_forward(
-                batch,
-                t,
-                x,
-                cond_coords,
-                cond_be
+                batch, t, x, cond_coords, cond_be
             )
             v = v + guidance_strength * guid_v
-            guid_strength_tot = guidance_strength + 1 
-            be = be / guid_strength_tot + guid_be * guidance_strength / guid_strength_tot # TODO mrx add options
+            guid_strength_tot = guidance_strength + 1
+            be = (
+                be / guid_strength_tot + guid_be * guidance_strength / guid_strength_tot
+            )  # TODO mrx add options
 
         v = manifold.proju(x, v)
 
@@ -781,17 +790,15 @@ class DockProjectedConjugatedCSPNet(ProjectedConjugatedCSPNet):
                 fc_cond = fc_cond.f
 
             else:
-
                 fc_cond = torch.zeros_like(batch.osda.xt)
-            
-            if cond_be is None: 
-                cond_be = torch.zeros_like(batch.y['bindingatoms'])
+
+            if cond_be is None:
+                cond_be = torch.zeros_like(batch.y["bindingatoms"])
 
             batch.xt = torch.cat([batch.xt, fc_cond], dim=-1)
-            batch.y['bindingatoms'] = torch.cat(
-                [batch.y['bindingatoms'], cond_be], dim=-1
+            batch.y["bindingatoms"] = torch.cat(
+                [batch.y["bindingatoms"], cond_be], dim=-1
             )
-
 
         coord_out, be_out = self.cspnet(
             batch,
