@@ -25,6 +25,7 @@ from rfm_docking.featurization import (
     get_feature_dims,
 )
 from rfm_docking.utils import gen_edges
+from rfm_docking.voronoi_utils import get_voronoi_nodes, cluster_voronoi_nodes
 
 
 def process_one(args):
@@ -105,6 +106,19 @@ def process_one(args):
         max_neighbors=zeolite_params["max_neighbors"],
         self_edges=zeolite_params["self_edges"],
     )
+
+    # calculate the voronoi nodes
+    # remove oxygen atoms before for smoother voronoi nodes
+    non_oxygen = np.where(dock_zeolite_atoms.squeeze() != 8, True, False)
+    non_o_zeolite_pos = dock_zeolite_pos[non_oxygen]
+
+    voronoi_nodes = get_voronoi_nodes(
+        non_o_zeolite_pos.numpy(), lattice_matrix_target, cartesian=False, cutoff=3.5
+    )
+    voronoi_nodes = cluster_voronoi_nodes(
+        voronoi_nodes, lattice_matrix_target, cutoff=13.0, merge_tol=1.0
+    )
+
     dock_zeolite_graph_arrays = (
         dock_zeolite_pos,
         dock_zeolite_atoms,
@@ -112,6 +126,7 @@ def process_one(args):
         lattice_angles,
         dock_zeolite_edges,
         dock_zeolite_atoms.shape[0],
+        voronoi_nodes,
     )
 
     # process the osda
@@ -151,6 +166,7 @@ def process_one(args):
         #  NOTE below we assume that opt_zeolite is close to dock_zeolite --> has same edges, save computation
         dock_zeolite_edges,
         opt_zeolite_atoms.shape[0],
+        voronoi_nodes,
     )
 
     opt_osda_atoms, opt_osda_pos = get_atoms_and_pos(opt_ligand_axyz)
@@ -366,6 +382,7 @@ class CustomCrystDataset(Dataset):
             angles,
             edge_indices,
             num_atoms,
+            voronoi_nodes,
         ) = data_dict["dock_zeolite_graph_arrays"]
 
         # assign the misc class to the zeolite node feats, except for atom types
@@ -381,6 +398,7 @@ class CustomCrystDataset(Dataset):
             edge_index=torch.LongTensor(
                 edge_indices
             ).contiguous(),  # shape (2, num_edges)
+            voronoi_nodes=voronoi_nodes,
             node_feats=zeolite_node_feats,
             num_atoms=num_atoms,
             num_bonds=edge_indices.shape[0],
@@ -419,6 +437,7 @@ class CustomCrystDataset(Dataset):
                 angles,
                 edge_indices,
                 num_atoms,
+                voronoi_nodes,
             ) = data_dict["opt_zeolite_graph_arrays"]
 
             zeolite_data_opt = Data(
@@ -429,6 +448,7 @@ class CustomCrystDataset(Dataset):
                 edge_index=torch.LongTensor(
                     edge_indices
                 ).contiguous(),  # shape (2, num_edges)
+                voronoi_nodes=voronoi_nodes,
                 node_feats=zeolite_node_feats,
                 num_atoms=num_atoms,
                 num_bonds=edge_indices.shape[0],

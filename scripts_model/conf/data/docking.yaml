@@ -4,23 +4,20 @@ root_path: ${oc.env:PROJECT_ROOT}/data
 prop: 
   - bindingatoms
 num_targets: 1
-# prop: scaled_lattice
-# num_targets: 6
-niggli: false
-primitive: false
-graph_method: crystalnn
 lattice_scale_method: scale_length
 preprocess_workers: 20
 readout: mean
 max_atoms: 1000
-otf_graph: false
 eval_model_name: docking
-tolerance: 0.1
 task: dock
 
-use_space_group: false
-use_pos_index: false
-train_max_epochs: 10
+zeolite_edges: 
+  edge_style: knn
+  max_neighbors: 8
+  cutoff: 2.5
+  self_edges: false
+
+train_max_epochs: 10000
 early_stopping_patience: 100000
 teacher_forcing_max_epoch: 1000
 
@@ -31,50 +28,35 @@ datamodule:
     train:
       _target_: src.rfm_docking.dataset.CustomCrystDataset
       name: Formation energy train
-      path: ${data.root_path}/241007_test_dataset_2/10examples_v2.csv 
-      save_path: ${data.root_path}/241007_test_dataset_2/10examples_v2/train.pt
+      path: ${data.root_path}/below_500.csv 
+      save_path: ${data.root_path}/train.pt
       prop: ${data.prop}
-      niggli: ${data.niggli}
-      primitive: ${data.primitive}
-      graph_method: ${data.graph_method}
-      tolerance: ${data.tolerance}
-      use_space_group: ${data.use_space_group}
-      use_pos_index: ${data.use_pos_index}
       lattice_scale_method: ${data.lattice_scale_method}
       preprocess_workers: ${data.preprocess_workers}
       task: ${data.task}
+      zeolite_edges: ${data.zeolite_edges}
 
     val:
       - _target_: src.rfm_docking.dataset.CustomCrystDataset
         name: Formation energy val
-        path: ${data.root_path}/241007_test_dataset_2/10examples_v2.csv 
-        save_path: ${data.root_path}/241007_test_dataset_2/10examples_v2/val.pt
+        path: ${data.root_path}/below_500_test.csv 
+        save_path: ${data.root_path}/val.pt
         prop: ${data.prop}
-        niggli: ${data.niggli}
-        primitive: ${data.primitive}
-        graph_method: ${data.graph_method}
-        tolerance: ${data.tolerance}
-        use_space_group: ${data.use_space_group}
-        use_pos_index: ${data.use_pos_index}
         lattice_scale_method: ${data.lattice_scale_method}
         preprocess_workers: ${data.preprocess_workers}
         task: ${data.task}
+        zeolite_edges: ${data.zeolite_edges}
 
     test:
       - _target_: src.rfm_docking.dataset.CustomCrystDataset
         name: Formation energy test
-        path: ${data.root_path}/241007_test_dataset_2/10examples_v2.csv
-        save_path: ${data.root_path}/241007_test_dataset_2/10examples_v2/test.pt
+        path: ${data.root_path}/below_500_test.csv
+        save_path: ${data.root_path}/test.pt
         prop: ${data.prop}
-        niggli: ${data.niggli}
-        primitive: ${data.primitive}
-        graph_method: ${data.graph_method}
-        tolerance: ${data.tolerance}
-        use_space_group: ${data.use_space_group}
-        use_pos_index: ${data.use_pos_index}
         lattice_scale_method: ${data.lattice_scale_method}
         preprocess_workers: ${data.preprocess_workers}
         task: ${data.task}
+        zeolite_edges: ${data.zeolite_edges}
 
   num_workers:
     train: 8
@@ -82,9 +64,9 @@ datamodule:
     test: 8
 
   batch_size:
-    train: 24
-    val: 24
-    test: 24
+    train: 64
+    val: 64
+    test: 64
 
   coord_manifold: ${model.manifold_getter.coord_manifold}
   dataset_name: ${data.dataset_name}
