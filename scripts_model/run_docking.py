@@ -20,12 +20,17 @@ from pytorch_lightning.callbacks import (
 )
 from pytorch_lightning.loggers import WandbLogger
 from hydra.utils import get_class
+import warnings
 
 import wandb
 from diffcsp.common.utils import log_hyperparameters
 from flowmm.model.eval_utils import register_omega_conf_resolvers
 from rfm_docking.model_pl import DockingRFMLitModule
 from rfm_docking.dock_then_optimize.model_pl import DockThenOptimizeRFMLitModule
+
+
+# suppress warnings from diffcsp
+warnings.filterwarnings("ignore")
 
 # https://github.com/Project-MONAI/MONAI/issues/701#issuecomment-767330310
 rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
@@ -172,9 +177,10 @@ def run(cfg: DictConfig) -> None:
 
     hydra.utils.log.info("Instantiating the Trainer")
     if cfg.train.strategy == "ddp":
-        strategy = DDPStrategy(find_unused_parameters=False)
+        strategy = DDPStrategy(find_unused_parameters=True)
     else:
         strategy = None
+
     trainer = pl.Trainer(
         # default_root_dir=hydra_dir,
         logger=wandb_logger,

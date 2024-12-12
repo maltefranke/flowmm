@@ -9,12 +9,7 @@ from torch_geometric.utils import dense_to_sparse
 from torch_geometric.data import Batch
 from pymatgen.core import Structure, Lattice
 from torch_scatter import scatter
-from copy import deepcopy
 
-from diffcsp.common.data_utils import radius_graph_pbc
-from diffcsp.common.data_utils import (
-    lattice_params_to_matrix_torch,
-)
 from diffcsp.pl_modules.cspnet import CSPLayer as DiffCSPLayer
 from diffcsp.pl_modules.cspnet import CSPNet as DiffCSPNet
 from diffcsp.pl_modules.cspnet import SinusoidsEmbedding
@@ -28,6 +23,7 @@ from flowmm.rfm.manifold_getter import (
 )
 from flowmm.rfm.manifolds.flat_torus import FlatTorus01
 from rfm_docking.featurization import get_feature_dims
+from rfm_docking.utils import merge_edges, gen_edges
 
 
 class Encoder(torch.nn.Module):
@@ -178,7 +174,6 @@ class CSPLayer(DiffCSPLayer):
 class CSPNet(DiffCSPNet):
     def __init__(
         self,
-        zeolite_edges: dict,
         osda_edges: dict,
         cross_edges: dict,
         hidden_dim: int = 512,
@@ -189,7 +184,6 @@ class CSPNet(DiffCSPNet):
         n_space: int = 3,
         num_freqs: int = 128,
         ln: bool = True,
-        use_log_map: bool = True,
         self_edges: bool = True,
         self_cond: bool = False,
         be_dim: int = 256,
@@ -258,14 +252,9 @@ class CSPNet(DiffCSPNet):
         self.be_out = nn.Linear(hidden_dim, 1, bias=True)
 
         self.ln = ln
-        self.use_log_map = use_log_map
         if self.ln:
             self.final_layer_norm = nn.LayerNorm(hidden_dim)
         self.self_edges = self_edges
-
-        self.zeolite_max_neighbors = zeolite_edges["max_neighbors"]
-        self.zeolite_edge_style = zeolite_edges["edge_style"]
-        self.zeolite_cutoff = zeolite_edges["cutoff"]
 
         self.osda_max_neighbors = osda_edges["max_neighbors"]
         self.osda_edge_style = osda_edges["edge_style"]
@@ -274,125 +263,6 @@ class CSPNet(DiffCSPNet):
         self.cross_max_neighbors = cross_edges["max_neighbors"]
         self.cross_edge_style = cross_edges["edge_style"]
         self.cross_cutoff = cross_edges["cutoff"]
-
-    def gen_edges(
-        self,
-        num_atoms,
-        frac_coords,
-        lattices,
-        node2graph,
-        edge_style="knn",
-        radius=7.0,
-        max_neighbors=15,
-    ):
-        if edge_style == "fc":
-            if self.self_edges:
-                lis = [torch.ones(n, n, device=num_atoms.device) for n in num_atoms]
-            else:
-                lis = [
-                    torch.ones(n, n, device=num_atoms.device)
-                    - torch.eye(n, device=num_atoms.device)
-                    for n in num_atoms
-                ]
-            fc_graph = torch.block_diag(*lis)
-            fc_edges, _ = dense_to_sparse(fc_graph)
-            fc_edges = fc_edges.to(frac_coords.device)
-
-            if self.use_log_map:
-                # this is the shortest torus distance, but DiffCSP didn't use it
-                frac_diff = FlatTorus01.logmap(
-                    frac_coords[fc_edges[0]], frac_coords[fc_edges[1]]
-                )
-            else:
-                frac_diff = frac_coords[fc_edges[1]] - frac_coords[fc_edges[0]]
-            return fc_edges, frac_diff
-
-        elif edge_style == "knn":
-            _lattices = lattice_params_to_matrix_torch(lattices[:, :3], lattices[:, 3:])
-            lattice_nodes = _lattices[node2graph]
-            cart_coords = torch.einsum("bi,bij->bj", frac_coords, lattice_nodes)
-
-            # we are dealing with huge graphs, so we need to loop over each graph to reduce memory usage
-            all_edges = []
-            all_to_jimages = []
-            all_num_bonds = []
-            for i, lattice in enumerate(_lattices):
-                edge_index_i, to_jimages, num_bonds = radius_graph_pbc(
-                    cart_coords[node2graph == i],
-                    None,
-                    None,
-                    num_atoms[i].view(-1).to(cart_coords.device),
-                    radius,
-                    max_neighbors,
-                    device=cart_coords.device,
-                    lattices=lattice.view(1, 3, 3),
-                )
-                all_edges.append(edge_index_i)
-                all_to_jimages.append(to_jimages)
-                all_num_bonds.append(num_bonds)
-
-            all_edges = [
-                edges + num_atoms[:i].sum() for i, edges in enumerate(all_edges)
-            ]
-            edge_index = torch.cat(all_edges, dim=1)
-            to_jimages = torch.cat(all_to_jimages, dim=0)
-            num_bonds = torch.cat(all_num_bonds, dim=0)
-
-            if self.use_log_map:
-                # this is the shortest torus distance, but DiffCSP didn't use it
-                # not sure it makes sense for the cartesian space version
-                edge_vector = FlatTorus01.logmap(
-                    frac_coords[edge_index[0]], frac_coords[edge_index[1]]
-                )
-            else:
-                distance_vectors = (
-                    frac_coords[edge_index[1]] - frac_coords[edge_index[0]]
-                )
-                distance_vectors += to_jimages.float()
-
-                edge_index, _, _, edge_vector = self.reorder_symmetric_edges(
-                    edge_index, to_jimages, num_bonds, distance_vectors
-                )
-                edge_vector = -edge_vector
-
-            return edge_index, edge_vector
-
-
-def merge_edges(num_osda, num_zeolite, osda_edges, zeolite_edges):
-    osda_edges = osda_edges.clone()
-    zeolite_edges = zeolite_edges.clone()
-
-    # osda offsets
-    osda_offsets = torch.cumsum(
-        torch.cat([torch.tensor([0], device=num_osda.device), num_osda]), dim=0
-    )[:-1]
-
-    # zeolite offsets
-    zeolite_offsets = torch.cumsum(
-        torch.cat([torch.tensor([0], device=num_zeolite.device), num_zeolite]), dim=0
-    )[:-1]
-
-    zeolite_indices = [
-        torch.logical_and(
-            zeolite_edges >= zeolite_offsets[i], zeolite_edges < zeolite_offsets[i + 1]
-        )
-        for i in range(len(num_osda) - 1)
-    ]
-    zeolite_indices.append(zeolite_edges >= zeolite_offsets[-1])
-
-    osda_indices = [
-        torch.logical_and(
-            osda_edges >= osda_offsets[i], osda_edges < osda_offsets[i + 1]
-        )
-        for i in range(len(num_osda) - 1)
-    ]
-    osda_indices.append(osda_edges >= osda_offsets[-1])
-
-    for idx, (zeo_i, osda_i) in enumerate(zip(zeolite_indices, osda_indices)):
-        zeolite_edges[zeo_i] += osda_offsets[idx] + num_osda[idx]
-        osda_edges[osda_i] += zeolite_offsets[idx]
-
-    return torch.cat([osda_edges, zeolite_edges], dim=1)
 
 
 class DockCSPNet(CSPNet):
@@ -425,7 +295,7 @@ class DockCSPNet(CSPNet):
 
         # create graph
         # for osda
-        new_osda_edges, osda_frac_diff = self.gen_edges(
+        new_osda_edges, osda_frac_diff = gen_edges(
             batch.osda.num_atoms,
             osda_xt,
             batch.lattices,
@@ -433,6 +303,7 @@ class DockCSPNet(CSPNet):
             edge_style=self.osda_edge_style,  # NOTE fc = fully connected
             radius=self.osda_cutoff,
             max_neighbors=self.osda_max_neighbors,
+            self_edges=self.self_edges,
         )
         new_osda_edge_feats = dummy_edge_ids.repeat(new_osda_edges.shape[1], 1)
         new_osda_edge_feats = self.edge_embedding(new_osda_edge_feats)
@@ -452,7 +323,7 @@ class DockCSPNet(CSPNet):
         osda_frac_diff = torch.cat([osda_frac_diff, osda_internal_frac_diff], dim=0)
 
         # for zeolite
-        zeolite_edges, zeolite_frac_diff = self.gen_edges(
+        """zeolite_edges, zeolite_frac_diff = gen_edges(
             batch.zeolite.num_atoms,
             batch.zeolite.frac_coords,
             batch.lattices,
@@ -460,6 +331,13 @@ class DockCSPNet(CSPNet):
             edge_style=self.zeolite_edge_style,
             radius=self.zeolite_cutoff,
             max_neighbors=self.zeolite_max_neighbors,
+            self_edges=self.self_edges,
+        )"""
+        zeolite_edges = batch.zeolite.edge_index
+
+        zeolite_frac_diff = FlatTorus01.logmap(
+            batch.zeolite.frac_coords[batch.zeolite.edge_index[0]],
+            batch.zeolite.frac_coords[batch.zeolite.edge_index[1]],
         )
 
         zeolite_edge_feats = dummy_edge_ids.repeat(zeolite_edges.shape[1], 1)
@@ -504,7 +382,7 @@ class DockCSPNet(CSPNet):
         cross_frac_coords = torch.cat(cross_frac_coords, dim=0)
 
         # cross edges
-        cross_edges, cross_frac_diff = self.gen_edges(
+        cross_edges, cross_frac_diff = gen_edges(
             cross_num_atoms,
             cross_frac_coords,
             batch.lattices,
@@ -512,6 +390,7 @@ class DockCSPNet(CSPNet):
             edge_style=self.cross_edge_style,
             radius=self.cross_cutoff,
             max_neighbors=self.cross_max_neighbors,
+            self_edges=self.self_edges,
         )
 
         # remove edges that are zeolite-zeolite or osda-osda
@@ -641,13 +520,14 @@ class OptimizeCSPNet(CSPNet):
         )  # last index is the dummy index
 
         # create graph
-        edges, frac_diff = self.gen_edges(
+        edges, frac_diff = gen_edges(
             batch.num_atoms,
             batch.frac_coords,
             batch.lattices,
             batch.batch,
             edge_style="knn",  # NOTE fc = fully connected
             radius=self.cutoff,
+            self_edges=self.self_edges,
         )
         dummy_edge_feats = dummy_edge_ids.repeat(edges.shape[1], 1)
 
