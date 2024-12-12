@@ -16,9 +16,6 @@ from diffcsp.common.utils import PROJECT_ROOT
 from tqdm import tqdm
 from multiprocessing import Pool
 from diffcsp.common.data_utils import (
-    preprocess,
-    add_scaled_lattice_prop,
-    build_crystal_graph,
     lattice_params_to_matrix,
 )
 from rfm_docking.featurization import (
@@ -27,16 +24,22 @@ from rfm_docking.featurization import (
     featurize_osda,
     get_feature_dims,
 )
+from rfm_docking.utils import gen_edges
 
 
 def process_one(args):
-    row, graph_method, prop_list = args
+    row, prop_list, zeolite_params = args
 
     crystal_id = row.dock_crystal
 
     ### process the lattice
     lattice_matrix = eval(row.dock_lattice)
     lattice_matrix = np.array(lattice_matrix)
+    lattice_lengths = Lattice(lattice_matrix).lengths
+    lattice_lengths = torch.tensor(lattice_lengths)
+
+    lattice_angles = Lattice(lattice_matrix).angles
+    lattice_angles = torch.tensor(lattice_angles)
 
     # lattice has to conform to pymatgen's Lattice object, rotate data accordingly
     lattice_matrix_target = lattice_params_to_matrix(
@@ -51,7 +54,11 @@ def process_one(args):
         U[:, -1] *= -1  # Correct for reflection if necessary
         R = U @ Vt
 
-    lattice = Lattice(lattice_matrix_target)
+    R = torch.tensor(R, dtype=torch.float32)
+
+    inv_lattice = torch.inverse(
+        torch.tensor(lattice_matrix_target, dtype=torch.float32)
+    )
 
     smiles = row.smiles
     loading = int(row.loading)
@@ -83,14 +90,29 @@ def process_one(args):
     )
     # process the zeolite
     dock_zeolite_atoms, dock_zeolite_pos = get_atoms_and_pos(dock_zeolite_axyz)
+    # change to correct coordinate system
     dock_zeolite_pos = dock_zeolite_pos @ R
-    dock_zeolite = Structure(
-        lattice=lattice,
-        coords=dock_zeolite_pos,
-        species=dock_zeolite_atoms,
-        coords_are_cartesian=True,
+    # cartesian to fractional
+    dock_zeolite_pos = dock_zeolite_pos @ inv_lattice
+
+    dock_zeolite_edges, _ = gen_edges(
+        num_atoms=torch.tensor(dock_zeolite_atoms.shape[0]).view(1, 1),
+        frac_coords=dock_zeolite_pos,
+        lattices=torch.tensor(Lattice(lattice_matrix).parameters).view(1, -1),
+        node2graph=torch.zeros(dock_zeolite_atoms.shape[0], dtype=torch.long),
+        edge_style=zeolite_params["edge_style"],
+        radius=zeolite_params["cutoff"],
+        max_neighbors=zeolite_params["max_neighbors"],
+        self_edges=zeolite_params["self_edges"],
     )
-    dock_zeolite_graph_arrays = build_crystal_graph(dock_zeolite, graph_method)
+    dock_zeolite_graph_arrays = (
+        dock_zeolite_pos,
+        dock_zeolite_atoms,
+        lattice_lengths,
+        lattice_angles,
+        dock_zeolite_edges,
+        dock_zeolite_atoms.shape[0],
+    )
 
     # process the osda
     dock_osda_atoms, dock_osda_pos = get_atoms_and_pos(dock_osda_axyz)
@@ -101,13 +123,16 @@ def process_one(args):
     dock_osda_pos = dock_osda_pos[non_hydrogen]
 
     dock_osda_pos = dock_osda_pos @ R
-    dock_osda = Structure(
-        lattice=lattice,
-        coords=dock_osda_pos,
-        species=dock_osda_atoms,
-        coords_are_cartesian=True,
+    dock_osda_pos = dock_osda_pos @ inv_lattice
+
+    dock_osda_graph_arrays = (
+        dock_osda_pos,
+        dock_osda_atoms,
+        lattice_lengths,
+        lattice_angles,
+        osda_edge_indices,
+        dock_osda_atoms.shape[0],
     )
-    dock_osda_graph_arrays = build_crystal_graph(dock_osda, graph_method)
 
     ### process the optimized structures
     opt_axyz = eval(row.opt_xyz)
@@ -116,13 +141,17 @@ def process_one(args):
     )
     opt_zeolite_atoms, opt_zeolite_pos = get_atoms_and_pos(opt_zeolite_axyz)
     opt_zeolite_pos = opt_zeolite_pos @ R
-    opt_zeolite = Structure(
-        lattice=lattice,
-        coords=opt_zeolite_pos,
-        species=opt_zeolite_atoms,
-        coords_are_cartesian=True,
+    opt_zeolite_pos = opt_zeolite_pos @ inv_lattice
+
+    opt_zeolite_graph_arrays = (
+        opt_zeolite_pos,
+        opt_zeolite_atoms,
+        lattice_lengths,
+        lattice_angles,
+        #  NOTE below we assume that opt_zeolite is close to dock_zeolite --> has same edges, save computation
+        dock_zeolite_edges,
+        opt_zeolite_atoms.shape[0],
     )
-    opt_zeolite_graph_arrays = build_crystal_graph(opt_zeolite, graph_method)
 
     opt_osda_atoms, opt_osda_pos = get_atoms_and_pos(opt_ligand_axyz)
 
@@ -132,19 +161,22 @@ def process_one(args):
     opt_osda_pos = opt_osda_pos[non_hydrogen]
 
     opt_osda_pos = opt_osda_pos @ R
-    opt_osda = Structure(
-        lattice=lattice,
-        coords=opt_osda_pos,
-        species=opt_osda_atoms,
-        coords_are_cartesian=True,
-    )
-    opt_osda_graph_arrays = build_crystal_graph(opt_osda, graph_method)
+    opt_osda_pos = opt_osda_pos @ inv_lattice
 
-    properties = dict() 
+    opt_osda_graph_arrays = (
+        opt_osda_pos,
+        opt_osda_atoms,
+        lattice_lengths,
+        lattice_angles,
+        osda_edge_indices,
+        opt_osda_atoms.shape[0],
+    )
+
+    properties = dict()
     for k in prop_list:
         if k in row.keys():
             properties[k] = torch.tensor(row[k], dtype=torch.float64)
-    
+
     preprocessed_dict = {
         "crystal_id": crystal_id,
         "smiles": smiles,
@@ -162,12 +194,8 @@ def process_one(args):
 def custom_preprocess(
     input_file,
     num_workers,
-    niggli,
-    primitive,
-    graph_method,
     prop_list,
-    use_space_group=False,
-    tol=0.01,
+    zeolite_params,
 ):
     df = pd.read_csv(input_file)  # .loc[:0]
 
@@ -178,7 +206,7 @@ def custom_preprocess(
                 pool.imap_unordered(
                     process_one,
                     iterable=[
-                        (df.iloc[idx], graph_method, prop_list)
+                        (df.iloc[idx], prop_list, zeolite_params)
                         for idx in range(len(df))
                     ],
                     chunksize=1,
@@ -189,7 +217,7 @@ def custom_preprocess(
 
     # NOTE uncomment to debug process_one
     # process_one((df.iloc[0], graph_method, prop_list))
-    
+
     # Convert the unordered results to a list
     unordered_results = list(parallelized())
 
@@ -228,16 +256,11 @@ class CustomCrystDataset(Dataset):
         name: ValueNode,
         path: ValueNode,
         prop: ValueNode,
-        niggli: ValueNode,
-        primitive: ValueNode,
-        graph_method: ValueNode,
         preprocess_workers: ValueNode,
         lattice_scale_method: ValueNode,
         save_path: ValueNode,
-        tolerance: ValueNode,
-        use_space_group: ValueNode,
-        use_pos_index: ValueNode,
         task: ValueNode,
+        zeolite_edges: ValueNode,
         **kwargs,
     ):
         super().__init__()
@@ -245,20 +268,18 @@ class CustomCrystDataset(Dataset):
         self.name = name
         self.df = pd.read_csv(path)
         self.prop = prop
-        self.niggli = niggli
-        self.primitive = primitive
-        self.graph_method = graph_method
         self.lattice_scale_method = lattice_scale_method
-        self.use_space_group = use_space_group
-        self.use_pos_index = use_pos_index
-        self.tolerance = tolerance
         self.task = task
 
         node_feat_dims, edge_feat_dims = get_feature_dims()
         self.node_feat_dims = node_feat_dims
         self.edge_feat_dims = edge_feat_dims
 
-        self.preprocess(save_path, preprocess_workers, prop) # prop = ['bindingatoms']
+        self.zeolite_edges = zeolite_edges
+
+        self.preprocess(
+            save_path, preprocess_workers, prop, self.zeolite_edges
+        )  # prop = ['bindingatoms']
 
         # add_scaled_lattice_prop(self.cached_data, lattice_scale_method)
         # TODO not sure if how to scale osda lattice - should it be different from zeolite, or scale their combined cell?
@@ -280,19 +301,15 @@ class CustomCrystDataset(Dataset):
         self.lattice_scaler = None
         self.scaler = None
 
-    def preprocess(self, save_path, preprocess_workers, prop):
+    def preprocess(self, save_path, preprocess_workers, prop, zeolite_params):
         if os.path.exists(save_path):
             self.cached_data = torch.load(save_path)
         else:
             cached_data = custom_preprocess(
                 self.path,
                 preprocess_workers,
-                niggli=self.niggli,
-                primitive=self.primitive,
-                graph_method=self.graph_method,
-                prop_list=prop, 
-                use_space_group=self.use_space_group,
-                tol=self.tolerance,
+                prop_list=prop,
+                zeolite_params=zeolite_params,
             )
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             torch.save(cached_data, save_path)
@@ -306,7 +323,7 @@ class CustomCrystDataset(Dataset):
 
         # scaler is set in DataModule set stage
         prop = dict()
-        for p in self.prop: 
+        for p in self.prop:
             # print(p, type(data_dict[p]))
             prop[p] = self.scaler[p].transform(data_dict[p]).view(1, -1)
         (
@@ -315,7 +332,6 @@ class CustomCrystDataset(Dataset):
             lengths,
             angles,
             _,  # NOTE edge indices will be overwritten with rdkit featurization
-            _,
             num_atoms,
         ) = data_dict["dock_osda_graph_arrays"]
 
@@ -349,14 +365,13 @@ class CustomCrystDataset(Dataset):
             lengths,
             angles,
             edge_indices,
-            _,  # to_jimages,
             num_atoms,
         ) = data_dict["dock_zeolite_graph_arrays"]
 
         # assign the misc class to the zeolite node feats, except for atom types
         zeolite_node_feats = torch.tensor(self.node_feat_dims) - 1
         zeolite_node_feats = zeolite_node_feats.repeat(num_atoms, 1)
-        zeolite_node_feats[:, 0] = torch.tensor(atom_types)
+        zeolite_node_feats[:, 0] = atom_types
 
         zeolite_data = Data(
             frac_coords=torch.Tensor(frac_coords),
@@ -364,7 +379,7 @@ class CustomCrystDataset(Dataset):
             lengths=torch.Tensor(lengths).view(1, -1),
             angles=torch.Tensor(angles).view(1, -1),
             edge_index=torch.LongTensor(
-                edge_indices.T
+                edge_indices
             ).contiguous(),  # shape (2, num_edges)
             node_feats=zeolite_node_feats,
             num_atoms=num_atoms,
@@ -379,7 +394,6 @@ class CustomCrystDataset(Dataset):
                 lengths,
                 angles,
                 edge_indices,  # NOTE edge indices will be overwritten with rdkit featurization
-                _,  # to_jimages,
                 num_atoms,
             ) = data_dict["opt_osda_graph_arrays"]
 
@@ -404,7 +418,6 @@ class CustomCrystDataset(Dataset):
                 lengths,
                 angles,
                 edge_indices,
-                _,  # to_jimages,
                 num_atoms,
             ) = data_dict["opt_zeolite_graph_arrays"]
 
@@ -414,7 +427,7 @@ class CustomCrystDataset(Dataset):
                 lengths=torch.Tensor(lengths).view(1, -1),
                 angles=torch.Tensor(angles).view(1, -1),
                 edge_index=torch.LongTensor(
-                    edge_indices.T
+                    edge_indices
                 ).contiguous(),  # shape (2, num_edges)
                 node_feats=zeolite_node_feats,
                 num_atoms=num_atoms,
@@ -434,7 +447,7 @@ class CustomCrystDataset(Dataset):
         data.num_atoms = osda_data.num_atoms + zeolite_data.num_atoms
         data.lengths = data.zeolite.lengths
         data.angles = data.zeolite.angles
-        data.y = prop # NOTE dictionary
+        data.y = prop  # NOTE dictionary
 
         return data
 

@@ -141,7 +141,7 @@ def get_atoms_and_pos(atom_list: np.array) -> tuple[torch.Tensor, torch.Tensor]:
     """Process axyz file to get atom symbols and positions."""
 
     atoms = atom_list[:, 0].astype(int)
-    atoms = torch.tensor(atoms, dtype=torch.int32)
+    atoms = torch.tensor(atoms, dtype=torch.long)
 
     pos = torch.tensor(atom_list[:, 1:], dtype=torch.float32)
 
