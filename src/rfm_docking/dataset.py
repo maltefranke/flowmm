@@ -113,7 +113,7 @@ def process_one(args):
     non_o_zeolite_pos = dock_zeolite_pos[non_oxygen]
 
     voronoi_nodes = get_voronoi_nodes(
-        non_o_zeolite_pos.numpy(), lattice_matrix_target, cartesian=False, cutoff=3.5
+        non_o_zeolite_pos.numpy(), lattice_matrix_target, cartesian=False, cutoff=3
     )
     voronoi_nodes = cluster_voronoi_nodes(
         voronoi_nodes, lattice_matrix_target, cutoff=13.0, merge_tol=1.0
@@ -124,9 +124,9 @@ def process_one(args):
         dock_zeolite_atoms,
         lattice_lengths,
         lattice_angles,
+        voronoi_nodes,
         dock_zeolite_edges,
         dock_zeolite_atoms.shape[0],
-        voronoi_nodes,
     )
 
     # process the osda
@@ -163,10 +163,10 @@ def process_one(args):
         opt_zeolite_atoms,
         lattice_lengths,
         lattice_angles,
+        voronoi_nodes,
         #  NOTE below we assume that opt_zeolite is close to dock_zeolite --> has same edges, save computation
         dock_zeolite_edges,
         opt_zeolite_atoms.shape[0],
-        voronoi_nodes,
     )
 
     opt_osda_atoms, opt_osda_pos = get_atoms_and_pos(opt_ligand_axyz)
@@ -380,9 +380,9 @@ class CustomCrystDataset(Dataset):
             atom_types,
             lengths,
             angles,
+            voronoi_nodes,
             edge_indices,
             num_atoms,
-            voronoi_nodes,
         ) = data_dict["dock_zeolite_graph_arrays"]
 
         # assign the misc class to the zeolite node feats, except for atom types
@@ -435,9 +435,9 @@ class CustomCrystDataset(Dataset):
                 atom_types,
                 lengths,
                 angles,
+                voronoi_nodes,
                 edge_indices,
                 num_atoms,
-                voronoi_nodes,
             ) = data_dict["opt_zeolite_graph_arrays"]
 
             zeolite_data_opt = Data(

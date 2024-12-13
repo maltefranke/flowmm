@@ -86,6 +86,31 @@ def sample_uniform_then_conformer(
     return prior
 
 
+def sample_voronoi(
+    osda: Batch, voronoi_nodes: torch.Tensor, sigma: float, loading: torch.Tensor
+) -> torch.Tensor:
+    """Sample from a Voronoi diagram."""
+
+    atoms_per_mol = osda.num_atoms // loading
+
+    prior = []
+    for i in osda.batch.unique():
+        loading_i = loading[i]
+        voronoi_nodes_i = ...  # TODO get the voronoi nodes for this batch
+
+        draw_voronoi_nodes = torch.randperm(voronoi_nodes_i)[:loading_i]
+
+        draw_voronoi_nodes = draw_voronoi_nodes.repeat_interleave(atoms_per_mol[i])
+
+        noise = torch.randn((atoms_per_mol[i] * loading_i, 3))
+        prior_i = voronoi_nodes + noise * sigma
+
+        prior.append(prior_i)
+
+    prior = torch.cat(prior, dim=0)
+    return prior
+
+
 def sample_harmonic_prior(batch: Batch, sigma: float) -> torch.Tensor:
     """Modified from FlowSite by Stark. Sample from a harmonic prior."""
     bid = batch.batch

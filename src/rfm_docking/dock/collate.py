@@ -9,6 +9,7 @@ from rfm_docking.sampling import (
     sample_uniform_then_gaussian,
     sample_uniform,
     sample_uniform_then_conformer,
+    sample_voronoi,
 )
 from src.flowmm.rfm.manifolds.flat_torus import FlatTorus01
 
@@ -70,6 +71,10 @@ def dock_collate_fn(
             x0 = sample_uniform_then_gaussian(osda, batch.loading, sigma=0.05)
         elif sampling == "uniform_then_conformer":
             x0 = sample_uniform_then_conformer(osda, smiles, batch.loading)
+        elif sampling == "voronoi":
+            x0 = sample_voronoi(
+                osda, batch.zeolite.voronoi_nodes, sigma=0.05, loading=batch.loading
+            )
         else:
             raise ValueError(f"Sampling method <{sampling}> not recognized")
 
@@ -92,7 +97,7 @@ def dock_collate_fn(
 
         # iterate over batch
         for i in range(len(batch)):
-            loading = batch.loading[i]
+            loading = int(batch.loading[i].item())
 
             x0_i = x0_geo[osda.batch == i].view(loading, -1, 3)
             x1_i = x1_geo[osda.batch == i].view(loading, -1, 3)

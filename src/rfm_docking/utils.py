@@ -2,6 +2,8 @@ import torch
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from torch_geometric.utils import dense_to_sparse
+from sklearn.cluster import DBSCAN
+from pymatgen.core.lattice import Lattice
 
 from flowmm.rfm.manifolds.flat_torus import FlatTorus01
 from diffcsp.common.data_utils import radius_graph_pbc
@@ -136,3 +138,117 @@ def merge_edges(num_osda, num_zeolite, osda_edges, zeolite_edges):
         zeolite_edges[zeo_i] += osda_offsets[idx] + num_osda[idx]
         osda_edges[osda_i] += zeolite_offsets[idx]
     return torch.cat([osda_edges, zeolite_edges], dim=1)
+
+
+def fast_wrap_coords_edge_based(
+    osda_pos: torch.Tensor, lattice: torch.Tensor, edge_idx: torch.Tensor
+) -> list[torch.Tensor]:
+    """
+    Wrap coordinates to unit cell.
+    1. Cluster the osda atoms spatially
+    2. For each cluster, translate atoms with edges to the closest position
+    """
+    possible_translations = torch.tensor(
+        [
+            [-1, -1, -1],
+            [-1, -1, 0],
+            [-1, -1, 1],
+            [-1, 0, -1],
+            [-1, 0, 0],
+            [-1, 0, 1],
+            [-1, 1, -1],
+            [-1, 1, 0],
+            [-1, 1, 1],
+            [0, -1, -1],
+            [0, -1, 0],
+            [0, -1, 1],
+            [0, 0, -1],
+            [0, 0, 0],
+            [0, 0, 1],
+            [0, 1, -1],
+            [0, 1, 0],
+            [0, 1, 1],
+            [1, -1, -1],
+            [1, -1, 0],
+            [1, -1, 1],
+            [1, 0, -1],
+            [1, 0, 0],
+            [1, 0, 1],
+            [1, 1, -1],
+            [1, 1, 0],
+            [1, 1, 1],
+        ],
+        dtype=torch.int32,
+    )
+    lattice = Lattice(lattice)
+    # cluster the osda atoms spatially
+    clustering = DBSCAN(eps=1.65, min_samples=1).fit(osda_pos)
+
+    labels = torch.tensor(clustering.labels_, dtype=torch.int32)
+    unique_labels = torch.unique(labels)
+
+    indices = torch.arange(osda_pos.shape[0])
+    wrapped_positions = []
+
+    for cluster in unique_labels:
+        # all the cluster atoms don't need to be updated anymore
+        already_updated_nodes = set(indices[labels == cluster].tolist())
+        queue = set(indices[labels == cluster].tolist())
+
+        updated_coords = osda_pos.clone()
+        frac_coords = lattice.get_fractional_coords(updated_coords)
+        frac_coords = torch.tensor(frac_coords, dtype=torch.float32)
+
+        while len(queue) > 0:
+            new_queue = set()
+            # iterate over the queue, which is a list of neighbors from the last node
+            for i in queue:
+                # determine the neighbors of i
+                edges = edge_idx[1, edge_idx[0] == i]
+
+                # remove already updated nodes
+                edges = edges[edges not in already_updated_nodes]
+
+                # if all neighbors have already been updated, go to the next node in queue
+                if len(edges) == 0:
+                    continue
+
+                # move connections as close as possible to i
+                # only +/- 1 and 0 allowed to make updates wrt. periodicity
+                coords_to_translate = updated_coords[edges, :].view(-1, 3)
+                coords_to_translate = lattice.get_fractional_coords(coords_to_translate)
+                coords_to_translate = torch.tensor(
+                    coords_to_translate, dtype=torch.float32
+                )
+
+                translated_coords = possible_translations.unsqueeze(
+                    0
+                ) + coords_to_translate.unsqueeze(1)
+
+                # take the closest position to the original position
+                distances = torch.norm(translated_coords - frac_coords[i], dim=-1)
+                min_idx = torch.min(distances, -1)
+
+                frac_coords[edges] += possible_translations[min_idx[1]]
+                updated_coords = lattice.get_cartesian_coords(frac_coords)
+                updated_coords = torch.tensor(updated_coords, dtype=torch.float32)
+
+                # mark node as updated. i.e. this node will not be updated again
+                already_updated_nodes.update({(i)})
+
+                unvisited_connected_nodes = [
+                    x
+                    for x in edges.flatten().tolist()
+                    if x not in already_updated_nodes
+                ]
+                new_queue.update(unvisited_connected_nodes)
+
+            # update the queue
+            queue = new_queue - already_updated_nodes
+
+        wrapped_positions.append(updated_coords)
+
+        # stop because we're only interested in the mean
+        break
+
+    return wrapped_positions
