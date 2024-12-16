@@ -73,11 +73,16 @@ def dock_collate_fn(
             x0 = sample_uniform_then_conformer(osda, smiles, batch.loading)
         elif sampling == "voronoi":
             x0 = sample_voronoi(
-                osda, batch.zeolite.voronoi_nodes, sigma=0.05, loading=batch.loading
+                osda,
+                batch.zeolite.voronoi_nodes,
+                batch.zeolite.num_voronoi_nodes,
+                sigma=0.05,  # TODO can make this adapt to lattice scale, molecule size, ... or set as hyperparameter
+                loading=batch.loading,
             )
         else:
             raise ValueError(f"Sampling method <{sampling}> not recognized")
 
+        # (N, 3) -> (N*3, )
         x0 = manifold_getter.georep_to_flatrep(osda.batch, x0, False).flat
 
         x0 = osda_manifold.projx(x0)

@@ -24,7 +24,7 @@ from rfm_docking.featurization import (
     featurize_osda,
     get_feature_dims,
 )
-from rfm_docking.utils import gen_edges
+from rfm_docking.utils import gen_edges, get_osda_mean_pbc
 from rfm_docking.voronoi_utils import get_voronoi_nodes, cluster_voronoi_nodes
 
 
@@ -138,6 +138,13 @@ def process_one(args):
     dock_osda_pos = dock_osda_pos[non_hydrogen]
 
     dock_osda_pos = dock_osda_pos @ R
+
+    # center of mass (com) of the osda taking into account periodic boundary conditions
+    dock_osda_com_frac_pbc = get_osda_mean_pbc(
+        dock_osda_pos, lattice_matrix_target, osda_edge_indices, loading
+    )
+
+    # cartesian to fractional
     dock_osda_pos = dock_osda_pos @ inv_lattice
 
     dock_osda_graph_arrays = (
@@ -145,6 +152,7 @@ def process_one(args):
         dock_osda_atoms,
         lattice_lengths,
         lattice_angles,
+        dock_osda_com_frac_pbc,
         osda_edge_indices,
         dock_osda_atoms.shape[0],
     )
@@ -347,6 +355,7 @@ class CustomCrystDataset(Dataset):
             atom_types,
             lengths,
             angles,
+            com_frac_pbc,
             _,  # NOTE edge indices will be overwritten with rdkit featurization
             num_atoms,
         ) = data_dict["dock_osda_graph_arrays"]
@@ -369,6 +378,7 @@ class CustomCrystDataset(Dataset):
             ).contiguous(),  # shape (2, num_edges)
             edge_feats=osda_edge_feats,
             node_feats=osda_node_feats,
+            center_of_mass=com_frac_pbc,
             num_atoms=num_atoms,
             num_bonds=osda_edge_indices.shape[0],
             num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
@@ -453,6 +463,7 @@ class CustomCrystDataset(Dataset):
                 num_atoms=num_atoms,
                 num_bonds=edge_indices.shape[0],
                 num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
+                num_voronoi_nodes=voronoi_nodes.shape[0],
             )
 
         data = HeteroData()

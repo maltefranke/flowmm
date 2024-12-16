@@ -87,27 +87,39 @@ def sample_uniform_then_conformer(
 
 
 def sample_voronoi(
-    osda: Batch, voronoi_nodes: torch.Tensor, sigma: float, loading: torch.Tensor
+    osda: Batch,
+    voronoi_nodes: torch.Tensor,
+    num_voronoi_nodes: torch.Tensor,
+    sigma: float,
+    loading: torch.Tensor,
 ) -> torch.Tensor:
     """Sample from a Voronoi diagram."""
 
     atoms_per_mol = osda.num_atoms // loading
+    voronoi_nodes_batch = torch.repeat_interleave(
+        torch.arange(num_voronoi_nodes.shape[0]), num_voronoi_nodes
+    )
 
     prior = []
     for i in osda.batch.unique():
         loading_i = loading[i]
-        voronoi_nodes_i = ...  # TODO get the voronoi nodes for this batch
+        voronoi_nodes_i = voronoi_nodes[voronoi_nodes_batch == i]
 
-        draw_voronoi_nodes = torch.randperm(voronoi_nodes_i)[:loading_i]
+        # draw random voronoi nodes based on loading
+        random_indices = torch.randperm(voronoi_nodes_i.shape[0])
+        draw_voronoi_nodes = voronoi_nodes_i[random_indices, :][:loading_i, :]
 
-        draw_voronoi_nodes = draw_voronoi_nodes.repeat_interleave(atoms_per_mol[i])
+        # expand to match the number of atoms in the molecule
+        draw_voronoi_nodes = torch.repeat_interleave(
+            draw_voronoi_nodes, atoms_per_mol[i], dim=0
+        )
 
-        noise = torch.randn((atoms_per_mol[i] * loading_i, 3))
-        prior_i = voronoi_nodes + noise * sigma
-
-        prior.append(prior_i)
+        prior.append(draw_voronoi_nodes)
 
     prior = torch.cat(prior, dim=0)
+
+    # sample from a Gaussian distribution around the Voronoi nodes
+    prior += torch.randn_like(prior) * sigma
     return prior
 
 

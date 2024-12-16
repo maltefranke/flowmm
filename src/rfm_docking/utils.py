@@ -141,7 +141,10 @@ def merge_edges(num_osda, num_zeolite, osda_edges, zeolite_edges):
 
 
 def fast_wrap_coords_edge_based(
-    osda_pos: torch.Tensor, lattice: torch.Tensor, edge_idx: torch.Tensor
+    osda_pos: torch.Tensor,
+    lattice: torch.Tensor,
+    edge_idx: torch.Tensor,
+    return_cart: bool = True,
 ) -> list[torch.Tensor]:
     """
     Wrap coordinates to unit cell.
@@ -251,4 +254,43 @@ def fast_wrap_coords_edge_based(
         # stop because we're only interested in the mean
         break
 
-    return wrapped_positions
+    wrapped_positions = wrapped_positions[0]
+    if return_cart:
+        return wrapped_positions
+    else:
+        wrapped_pos_frac = lattice.get_fractional_coords(wrapped_positions)
+
+        return torch.tensor(wrapped_pos_frac, dtype=torch.float32)
+
+
+def get_osda_mean_pbc(
+    osda_cart_coords: torch.Tensor,
+    lattice: torch.Tensor,
+    edge_index: torch.Tensor,
+    loading: int,
+) -> torch.Tensor:
+    """
+    Function to calculate the mean position of osda with periodic boundary conditions.
+    Return means of osda molecules in fractional coordinates.
+    """
+
+    # split pos into individual osda molecules
+    split_osda_pos = torch.split(
+        osda_cart_coords, osda_cart_coords.shape[0] // loading, dim=0
+    )
+    means = []
+
+    # handle each molecule separately
+    for osda_pos_i in split_osda_pos:
+        # Wrap coordinates with PBC
+        wrapped_coords_frac = fast_wrap_coords_edge_based(
+            osda_pos_i, lattice, edge_index, return_cart=False
+        )
+
+        # get mean coordinate, and wrap it back to the unit cell
+        mean = wrapped_coords_frac.mean(0) % 1.0
+        means.append(mean.view(1, 3))
+
+    means = torch.cat(means, dim=0)
+
+    return means
