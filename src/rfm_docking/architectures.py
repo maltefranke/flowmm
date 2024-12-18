@@ -483,12 +483,6 @@ class DockCSPNet(CSPNet):
         if self.ln:
             node_features = self.final_layer_norm(node_features)
 
-        # extract osda node feats from cross node feats
-        # osda_node_features = node_features[osda_nodes_mask]
-
-        # predict coords
-        # coord_out = self.coord_out(osda_node_features)
-
         coord_out = self.coord_out(node_features[is_osda])
 
         # predict binding energy TODO mrx add more options
