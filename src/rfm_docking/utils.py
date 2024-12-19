@@ -264,7 +264,7 @@ def fast_wrap_coords_edge_based(
 
 
 def get_osda_mean_pbc(
-    osda_cart_coords: torch.Tensor,
+    osda_coords_frac: torch.Tensor,
     lattice: torch.Tensor,
     edge_index: torch.Tensor,
     loading: int,
@@ -273,10 +273,11 @@ def get_osda_mean_pbc(
     Function to calculate the mean position of osda with periodic boundary conditions.
     Return means of osda molecules in fractional coordinates.
     """
+    osda_coords_cart = osda_coords_frac @ lattice.T
 
     # split pos into individual osda molecules
     split_osda_pos = torch.split(
-        osda_cart_coords, osda_cart_coords.shape[0] // loading, dim=0
+        osda_coords_cart, osda_coords_cart.shape[0] // loading, dim=0
     )
     means = []
 

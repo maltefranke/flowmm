@@ -8,31 +8,26 @@ from flowmm.rfm.manifolds.flat_torus import FlatTorus01
 
 
 def get_voronoi_nodes(
-    zeolite_pos: np.array, lattice: np.array, cartesian: bool = True, cutoff: float = 3
+    zeolite_pos_frac: torch.Tensor, lattice: np.array, cutoff: float = 3
 ) -> np.array:
     # Compute Voronoi diagram
-    vor = Voronoi(zeolite_pos)
+    vor = Voronoi(zeolite_pos_frac)
 
     # Get Voronoi nodes
-    voronoi_pos = vor.vertices
-
-    # cartesian to fractional
-    zeolite_pos_frac = np.dot(zeolite_pos, np.linalg.inv(lattice))
-    voronoi_pos_frac = np.dot(voronoi_pos, np.linalg.inv(lattice))
+    voronoi_pos_frac = vor.vertices
 
     # remove voronoi nodes outside the unit cell -> they must not be wrapped back in
     is_outside = np.any(voronoi_pos_frac > 1, axis=1) | np.any(
         voronoi_pos_frac < 0, axis=1
     )
-    voronoi_pos = voronoi_pos[~is_outside]
+
     voronoi_pos_frac = voronoi_pos_frac[~is_outside]
 
     # to torch needed for log map
-    zeolite_pos_frac_torch = torch.tensor(zeolite_pos_frac)
     voronoi_pos_frac_torch = torch.tensor(voronoi_pos_frac)
 
     distance_vectors = FlatTorus01.logmap(
-        zeolite_pos_frac_torch[:, None, :], voronoi_pos_frac_torch[None, :, :]
+        zeolite_pos_frac[:, None, :], voronoi_pos_frac_torch[None, :, :]
     ).numpy()
 
     # frac to cartesian
@@ -44,14 +39,17 @@ def get_voronoi_nodes(
         )
     )
 
-    # Find the indices of voronoi nodes that are closer than 3 to at least one zeolite position
+    # Find the indices of voronoi nodes that are closer than 3A to at least one zeolite position
     mask = np.any(distance_tensor < cutoff, axis=0)
 
+    if voronoi_pos_frac[~mask].shape[0] == 0:
+        print("distance_tensor: ", distance_tensor)
+        print("zeolite_pos_frac: ", zeolite_pos_frac)
+        print("voronoi_pos_frac: ", voronoi_pos_frac)
+        print("mask: ", mask)
+
     # Mask out the voronoi nodes within the cutoff
-    if cartesian:
-        return voronoi_pos[~mask]
-    else:
-        return voronoi_pos_frac[~mask]
+    return voronoi_pos_frac[~mask]
 
 
 def cluster_voronoi_nodes(
@@ -80,6 +78,7 @@ def cluster_voronoi_nodes(
             -1,
         )
     )
+
     voronoi_classes = clustering.fit_predict(distance_tensor)
 
     merged_voronoi_pos = []

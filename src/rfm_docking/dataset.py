@@ -28,7 +28,7 @@ from rfm_docking.utils import gen_edges, get_osda_mean_pbc
 from rfm_docking.voronoi_utils import get_voronoi_nodes, cluster_voronoi_nodes
 
 
-def process_one(args):
+def process_one_(args):
     row, prop_list, zeolite_params = args
 
     crystal_id = row.dock_crystal
@@ -36,9 +36,9 @@ def process_one(args):
     ### process the lattice
     lattice_matrix = eval(row.dock_lattice)
     lattice_matrix = np.array(lattice_matrix)
+
     lattice_lengths = Lattice(lattice_matrix).lengths
     lattice_lengths = torch.tensor(lattice_lengths)
-
     lattice_angles = Lattice(lattice_matrix).angles
     lattice_angles = torch.tensor(lattice_angles)
 
@@ -93,8 +93,21 @@ def process_one(args):
     dock_zeolite_atoms, dock_zeolite_pos = get_atoms_and_pos(dock_zeolite_axyz)
     # change to correct coordinate system
     dock_zeolite_pos = dock_zeolite_pos @ R
-    # cartesian to fractional
-    dock_zeolite_pos = dock_zeolite_pos @ inv_lattice
+
+    # cartesian to fractional, wrap back into unit cell
+    dock_zeolite_pos = (dock_zeolite_pos @ inv_lattice) % 1.0
+
+    # calculate the voronoi nodes
+    # remove oxygen atoms before for smoother voronoi nodes
+    non_oxygen = np.where(dock_zeolite_atoms.squeeze() != 8, True, False)
+    non_o_zeolite_pos = dock_zeolite_pos[non_oxygen]
+
+    voronoi_nodes = get_voronoi_nodes(
+        non_o_zeolite_pos, lattice_matrix_target, cutoff=2.5
+    )
+    voronoi_nodes = cluster_voronoi_nodes(
+        voronoi_nodes, lattice_matrix_target, cutoff=13.0, merge_tol=1.0
+    )
 
     dock_zeolite_edges, _ = gen_edges(
         num_atoms=torch.tensor(dock_zeolite_atoms.shape[0]).view(1, 1),
@@ -105,18 +118,6 @@ def process_one(args):
         radius=zeolite_params["cutoff"],
         max_neighbors=zeolite_params["max_neighbors"],
         self_edges=zeolite_params["self_edges"],
-    )
-
-    # calculate the voronoi nodes
-    # remove oxygen atoms before for smoother voronoi nodes
-    non_oxygen = np.where(dock_zeolite_atoms.squeeze() != 8, True, False)
-    non_o_zeolite_pos = dock_zeolite_pos[non_oxygen]
-
-    voronoi_nodes = get_voronoi_nodes(
-        non_o_zeolite_pos.numpy(), lattice_matrix_target, cartesian=False, cutoff=3
-    )
-    voronoi_nodes = cluster_voronoi_nodes(
-        voronoi_nodes, lattice_matrix_target, cutoff=13.0, merge_tol=1.0
     )
 
     dock_zeolite_graph_arrays = (
@@ -139,13 +140,13 @@ def process_one(args):
 
     dock_osda_pos = dock_osda_pos @ R
 
+    # cartesian to fractional, wrap back into unit cell
+    dock_osda_pos = (dock_osda_pos @ inv_lattice) % 1.0
+
     # center of mass (com) of the osda taking into account periodic boundary conditions
     dock_osda_com_frac_pbc = get_osda_mean_pbc(
         dock_osda_pos, lattice_matrix_target, osda_edge_indices, loading
     )
-
-    # cartesian to fractional
-    dock_osda_pos = dock_osda_pos @ inv_lattice
 
     dock_osda_graph_arrays = (
         dock_osda_pos,
@@ -164,7 +165,7 @@ def process_one(args):
     )
     opt_zeolite_atoms, opt_zeolite_pos = get_atoms_and_pos(opt_zeolite_axyz)
     opt_zeolite_pos = opt_zeolite_pos @ R
-    opt_zeolite_pos = opt_zeolite_pos @ inv_lattice
+    opt_zeolite_pos = (opt_zeolite_pos @ inv_lattice) % 1.0
 
     opt_zeolite_graph_arrays = (
         opt_zeolite_pos,
@@ -185,7 +186,7 @@ def process_one(args):
     opt_osda_pos = opt_osda_pos[non_hydrogen]
 
     opt_osda_pos = opt_osda_pos @ R
-    opt_osda_pos = opt_osda_pos @ inv_lattice
+    opt_osda_pos = (opt_osda_pos @ inv_lattice) % 1.0
 
     opt_osda_graph_arrays = (
         opt_osda_pos,
@@ -215,6 +216,15 @@ def process_one(args):
     return preprocessed_dict
 
 
+def process_one(args):
+    try:
+        return process_one_(args)
+    except Exception as e:
+        print(f"Error processing crystal {args[0].dock_crystal}")
+        print(e)
+        return None
+
+
 def custom_preprocess(
     input_file,
     num_workers,
@@ -233,7 +243,7 @@ def custom_preprocess(
                         (df.iloc[idx], prop_list, zeolite_params)
                         for idx in range(len(df))
                     ],
-                    chunksize=1,
+                    chunksize=20,
                 ),
                 total=len(df),
             ):
@@ -245,7 +255,10 @@ def custom_preprocess(
     # Convert the unordered results to a list
     unordered_results = list(parallelized())
 
-    # Create a dictionary mapping crystal_id to results
+    # remove Nones from the list
+    unordered_results = [result for result in unordered_results if result is not None]
+
+    """# Create a dictionary mapping crystal_id to results
     mpid_to_results = {result["crystal_id"]: result for result in unordered_results}
 
     # Create a list of ordered results based on the original order of the dataframe
@@ -253,7 +266,10 @@ def custom_preprocess(
         mpid_to_results[df.iloc[idx]["dock_crystal"]] for idx in range(len(df))
     ]
 
-    return ordered_results
+    return ordered_results"""
+
+    # we're fine with unordered results
+    return unordered_results
 
 
 def custom_add_scaled_lattice_prop(
