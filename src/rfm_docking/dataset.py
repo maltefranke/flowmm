@@ -1,18 +1,15 @@
 import os
-import hydra
-import omegaconf
 import pandas as pd
 import numpy as np
-from rdkit import Chem
 import torch
 from torch.utils.data import Dataset
 from torch_geometric.data import Data, HeteroData
-from pymatgen.core.structure import Structure
 from pymatgen.core.lattice import Lattice
 from omegaconf import ValueNode
-from p_tqdm import p_umap
+import h5py
+import pickle
+from io import BytesIO
 
-from diffcsp.common.utils import PROJECT_ROOT
 from tqdm import tqdm
 from multiprocessing import Pool
 from diffcsp.common.data_utils import (
@@ -290,6 +287,143 @@ def custom_add_scaled_lattice_prop(
         dict["scaled_lattice"] = np.concatenate([lengths, angles])
 
 
+def dict_to_data(data_dict, task, prop_list, scaler, node_feat_dims):
+    # scaler is set in DataModule set stage
+    prop = dict()
+    for p in prop_list:
+        # print(p, type(data_dict[p]))
+        prop[p] = scaler[p].transform(data_dict[p]).view(1, -1)
+    (
+        frac_coords,
+        atom_types,
+        lengths,
+        angles,
+        com_frac_pbc,
+        _,  # NOTE edge indices will be overwritten with rdkit featurization
+        num_atoms,
+    ) = data_dict["dock_osda_graph_arrays"]
+
+    smiles = data_dict["smiles"]
+    loading = data_dict["loading"]
+
+    osda_node_feats, osda_edge_feats, osda_edge_indices = data_dict["osda_feats"]
+
+    # atom_coords are fractional coordinates
+    # edge_index is incremented during batching
+    # https://pytorch-geometric.readthedocs.io/en/latest/notes/batching.html
+    osda_data = Data(
+        frac_coords=torch.Tensor(frac_coords),
+        atom_types=torch.LongTensor(atom_types),
+        lengths=torch.Tensor(lengths).view(1, -1),
+        angles=torch.Tensor(angles).view(1, -1),
+        edge_index=torch.LongTensor(
+            osda_edge_indices
+        ).contiguous(),  # shape (2, num_edges)
+        edge_feats=osda_edge_feats,
+        node_feats=osda_node_feats,
+        center_of_mass=com_frac_pbc,
+        num_atoms=num_atoms,
+        num_bonds=osda_edge_indices.shape[0],
+        num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
+        # y=prop.view(1, -1), # TODO mrx prop is now a dict so this will fail
+    )
+
+    (
+        frac_coords,
+        atom_types,
+        lengths,
+        angles,
+        voronoi_nodes,
+        edge_indices,
+        num_atoms,
+    ) = data_dict["dock_zeolite_graph_arrays"]
+
+    # assign the misc class to the zeolite node feats, except for atom types
+    zeolite_node_feats = torch.tensor(node_feat_dims) - 1
+    zeolite_node_feats = zeolite_node_feats.repeat(num_atoms, 1)
+    zeolite_node_feats[:, 0] = atom_types
+
+    zeolite_data = Data(
+        frac_coords=torch.Tensor(frac_coords),
+        atom_types=torch.LongTensor(atom_types),
+        lengths=torch.Tensor(lengths).view(1, -1),
+        angles=torch.Tensor(angles).view(1, -1),
+        edge_index=torch.LongTensor(edge_indices).contiguous(),  # shape (2, num_edges)
+        voronoi_nodes=voronoi_nodes,
+        node_feats=zeolite_node_feats,
+        num_atoms=num_atoms,
+        num_bonds=edge_indices.shape[0],
+        num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
+    )
+
+    if "optimize" in task:
+        (
+            frac_coords,
+            atom_types,
+            lengths,
+            angles,
+            edge_indices,  # NOTE edge indices will be overwritten with rdkit featurization
+            num_atoms,
+        ) = data_dict["opt_osda_graph_arrays"]
+
+        osda_data_opt = Data(
+            frac_coords=torch.Tensor(frac_coords),
+            atom_types=torch.LongTensor(atom_types),
+            lengths=torch.Tensor(lengths).view(1, -1),
+            angles=torch.Tensor(angles).view(1, -1),
+            edge_index=torch.LongTensor(
+                osda_edge_indices
+            ).contiguous(),  # shape (2, num_edges)
+            edge_feats=osda_edge_feats,
+            node_feats=osda_node_feats,
+            num_atoms=num_atoms,
+            num_bonds=osda_edge_indices.shape[0],
+            num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
+        )
+
+        (
+            frac_coords,
+            atom_types,
+            lengths,
+            angles,
+            voronoi_nodes,
+            edge_indices,
+            num_atoms,
+        ) = data_dict["opt_zeolite_graph_arrays"]
+
+        zeolite_data_opt = Data(
+            frac_coords=torch.Tensor(frac_coords),
+            atom_types=torch.LongTensor(atom_types),
+            lengths=torch.Tensor(lengths).view(1, -1),
+            angles=torch.Tensor(angles).view(1, -1),
+            edge_index=torch.LongTensor(
+                edge_indices
+            ).contiguous(),  # shape (2, num_edges)
+            voronoi_nodes=voronoi_nodes,
+            node_feats=zeolite_node_feats,
+            num_atoms=num_atoms,
+            num_bonds=edge_indices.shape[0],
+            num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
+            num_voronoi_nodes=voronoi_nodes.shape[0],
+        )
+
+    data = HeteroData()
+    data.crystal_id = data_dict["crystal_id"]
+    data.smiles = smiles
+    data.loading = loading
+    data.osda = osda_data
+    data.zeolite = zeolite_data
+    if "optimize" in task:
+        data.osda_opt = osda_data_opt
+        data.zeolite_opt = zeolite_data_opt
+    data.num_atoms = osda_data.num_atoms + zeolite_data.num_atoms
+    data.lengths = data.zeolite.lengths
+    data.angles = data.zeolite.angles
+    data.y = prop  # NOTE dictionary
+
+    return data
+
+
 class CustomCrystDataset(Dataset):
     def __init__(
         self,
@@ -361,145 +495,128 @@ class CustomCrystDataset(Dataset):
     def __getitem__(self, index):
         data_dict = self.cached_data[index]
 
-        # scaler is set in DataModule set stage
-        prop = dict()
-        for p in self.prop:
-            # print(p, type(data_dict[p]))
-            prop[p] = self.scaler[p].transform(data_dict[p]).view(1, -1)
-        (
-            frac_coords,
-            atom_types,
-            lengths,
-            angles,
-            com_frac_pbc,
-            _,  # NOTE edge indices will be overwritten with rdkit featurization
-            num_atoms,
-        ) = data_dict["dock_osda_graph_arrays"]
-
-        smiles = data_dict["smiles"]
-        loading = data_dict["loading"]
-
-        osda_node_feats, osda_edge_feats, osda_edge_indices = data_dict["osda_feats"]
-
-        # atom_coords are fractional coordinates
-        # edge_index is incremented during batching
-        # https://pytorch-geometric.readthedocs.io/en/latest/notes/batching.html
-        osda_data = Data(
-            frac_coords=torch.Tensor(frac_coords),
-            atom_types=torch.LongTensor(atom_types),
-            lengths=torch.Tensor(lengths).view(1, -1),
-            angles=torch.Tensor(angles).view(1, -1),
-            edge_index=torch.LongTensor(
-                osda_edge_indices
-            ).contiguous(),  # shape (2, num_edges)
-            edge_feats=osda_edge_feats,
-            node_feats=osda_node_feats,
-            center_of_mass=com_frac_pbc,
-            num_atoms=num_atoms,
-            num_bonds=osda_edge_indices.shape[0],
-            num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
-            # y=prop.view(1, -1), # TODO mrx prop is now a dict so this will fail
+        data = dict_to_data(
+            data_dict, self.task, self.prop, self.scaler, self.node_feat_dims
         )
-
-        (
-            frac_coords,
-            atom_types,
-            lengths,
-            angles,
-            voronoi_nodes,
-            edge_indices,
-            num_atoms,
-        ) = data_dict["dock_zeolite_graph_arrays"]
-
-        # assign the misc class to the zeolite node feats, except for atom types
-        zeolite_node_feats = torch.tensor(self.node_feat_dims) - 1
-        zeolite_node_feats = zeolite_node_feats.repeat(num_atoms, 1)
-        zeolite_node_feats[:, 0] = atom_types
-
-        zeolite_data = Data(
-            frac_coords=torch.Tensor(frac_coords),
-            atom_types=torch.LongTensor(atom_types),
-            lengths=torch.Tensor(lengths).view(1, -1),
-            angles=torch.Tensor(angles).view(1, -1),
-            edge_index=torch.LongTensor(
-                edge_indices
-            ).contiguous(),  # shape (2, num_edges)
-            voronoi_nodes=voronoi_nodes,
-            node_feats=zeolite_node_feats,
-            num_atoms=num_atoms,
-            num_bonds=edge_indices.shape[0],
-            num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
-        )
-
-        if "optimize" in self.task:
-            (
-                frac_coords,
-                atom_types,
-                lengths,
-                angles,
-                edge_indices,  # NOTE edge indices will be overwritten with rdkit featurization
-                num_atoms,
-            ) = data_dict["opt_osda_graph_arrays"]
-
-            osda_data_opt = Data(
-                frac_coords=torch.Tensor(frac_coords),
-                atom_types=torch.LongTensor(atom_types),
-                lengths=torch.Tensor(lengths).view(1, -1),
-                angles=torch.Tensor(angles).view(1, -1),
-                edge_index=torch.LongTensor(
-                    osda_edge_indices
-                ).contiguous(),  # shape (2, num_edges)
-                edge_feats=osda_edge_feats,
-                node_feats=osda_node_feats,
-                num_atoms=num_atoms,
-                num_bonds=osda_edge_indices.shape[0],
-                num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
-            )
-
-            (
-                frac_coords,
-                atom_types,
-                lengths,
-                angles,
-                voronoi_nodes,
-                edge_indices,
-                num_atoms,
-            ) = data_dict["opt_zeolite_graph_arrays"]
-
-            zeolite_data_opt = Data(
-                frac_coords=torch.Tensor(frac_coords),
-                atom_types=torch.LongTensor(atom_types),
-                lengths=torch.Tensor(lengths).view(1, -1),
-                angles=torch.Tensor(angles).view(1, -1),
-                edge_index=torch.LongTensor(
-                    edge_indices
-                ).contiguous(),  # shape (2, num_edges)
-                voronoi_nodes=voronoi_nodes,
-                node_feats=zeolite_node_feats,
-                num_atoms=num_atoms,
-                num_bonds=edge_indices.shape[0],
-                num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
-                num_voronoi_nodes=voronoi_nodes.shape[0],
-            )
-
-        data = HeteroData()
-        data.crystal_id = data_dict["crystal_id"]
-        data.smiles = smiles
-        data.loading = loading
-        data.osda = osda_data
-        data.zeolite = zeolite_data
-        if "optimize" in self.task:
-            data.osda_opt = osda_data_opt
-            data.zeolite_opt = zeolite_data_opt
-        data.num_atoms = osda_data.num_atoms + zeolite_data.num_atoms
-        data.lengths = data.zeolite.lengths
-        data.angles = data.zeolite.angles
-        data.y = prop  # NOTE dictionary
-
         return data
 
     def __repr__(self) -> str:
         return f"CustomCrystDataset({self.name=}, {self.path=})"
+
+
+class DistributedDataset(Dataset):
+    def __init__(
+        self,
+        name: ValueNode,
+        raw_data_dir: ValueNode,
+        processed_data_dir: ValueNode,
+        preprocess_workers: ValueNode,
+        prop: ValueNode,
+        lattice_scale_method: ValueNode,
+        task: ValueNode,
+        zeolite_edges: ValueNode,
+    ):
+        """
+        Initialize the dataset.
+        Args:
+            file_paths (list of str): Paths to raw data files.
+            cache_dir (str): Directory to store processed files.
+        """
+        self.name = name
+        self.task = task
+        self.raw_data_dir = raw_data_dir
+        self.processed_data_dir = processed_data_dir
+        os.makedirs(self.processed_data_dir, exist_ok=True)
+
+        node_feat_dims, edge_feat_dims = get_feature_dims()
+        self.node_feat_dims = node_feat_dims
+        self.edge_feat_dims = edge_feat_dims
+
+        self.prop = prop
+
+        file_paths = [
+            os.path.join(self.raw_data_dir, file)
+            for file in os.listdir(self.raw_data_dir)
+        ]
+
+        # Process and store data
+        self.processed_files = []
+        self.num_data_points = []
+        for file_path in file_paths:
+            processed_file = os.path.join(
+                processed_data_dir,
+                f"{os.path.splitext(os.path.basename(file_path))[0]}.pt",
+            )
+            if not os.path.exists(processed_file):
+                print(f"Processing {file_path}...")
+                cached_data = custom_preprocess(
+                    file_path,
+                    preprocess_workers,
+                    prop_list=prop,
+                    zeolite_params=zeolite_edges,
+                )
+
+                custom_add_scaled_lattice_prop(
+                    cached_data, lattice_scale_method, "dock_zeolite_graph_arrays"
+                )
+                custom_add_scaled_lattice_prop(
+                    cached_data, lattice_scale_method, "dock_osda_graph_arrays"
+                )
+
+                if "optimize" in task:
+                    custom_add_scaled_lattice_prop(
+                        cached_data,
+                        lattice_scale_method,
+                        "opt_zeolite_graph_arrays",
+                    )
+                    custom_add_scaled_lattice_prop(
+                        cached_data, lattice_scale_method, "opt_osda_graph_arrays"
+                    )
+
+                os.makedirs(os.path.dirname(processed_file), exist_ok=True)
+                torch.save(cached_data, processed_file)
+
+                self.num_data_points.append(len(cached_data))
+
+            else:
+                # Get the number of data points in the processed file
+                cached_data = torch.load(processed_file)
+                self.num_data_points.append(len(cached_data))
+                # remove cached data from memory
+                del cached_data
+
+            self.processed_files.append(processed_file)
+
+        # Create a cumulative index map for efficient global indexing
+        self.cumulative_sizes = np.cumsum(self.num_data_points)
+
+        self.scaler = None
+        self.lattice_scaler = None
+
+    def __len__(self):
+        return sum(self.num_data_points)
+
+    def __getitem__(self, idx):
+        # Find the file that contains the requested index
+        file_idx = np.searchsorted(self.cumulative_sizes, idx, side="right")
+        if file_idx > 0:
+            idx_in_file = idx - self.cumulative_sizes[file_idx - 1]
+        else:
+            idx_in_file = idx
+
+        # Load data from the file
+        data_dict_list = torch.load(self.processed_files[file_idx])
+        data_dict = data_dict_list[idx_in_file]
+        del data_dict_list
+
+        data = dict_to_data(
+            data_dict, self.task, self.prop, self.scaler, self.node_feat_dims
+        )
+
+        return data
+
+    def __repr__(self) -> str:
+        return f"DistributedDataset({self.name=}, {self.path=})"
 
 
 if __name__ == "__main__":
