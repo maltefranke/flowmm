@@ -4,6 +4,7 @@ from rdkit.Chem import AllChem
 from torch_geometric.utils import dense_to_sparse
 from sklearn.cluster import DBSCAN
 from pymatgen.core.lattice import Lattice
+from scipy.spatial.transform import Rotation as R
 
 from flowmm.rfm.manifolds.flat_torus import FlatTorus01
 from diffcsp.common.data_utils import radius_graph_pbc
@@ -36,8 +37,46 @@ def smiles_to_pos(smiles, forcefield="mmff", device="cpu"):
         )
         atom_coords.append(pos)
 
-    # Return the atomic numbers and coordinates as a tuple
-    return torch.stack(atom_coords)
+    atom_coords = torch.stack(atom_coords)
+
+    # remove mean to center the molecule
+    atom_coords -= atom_coords.mean(0)
+
+    return atom_coords
+
+
+def sample_rotation_matrices(num_matrices: torch.Tensor) -> torch.Tensor:
+    """Samples random 3D rotation matrices."""
+    return torch.tensor(
+        R.random(num_matrices).as_matrix(), dtype=torch.float32
+    )  # Shape: (num_matrices, 3, 3)
+
+
+def duplicate_and_rotate_tensors(
+    tensors: list[torch.Tensor], loadings: torch.Tensor
+) -> torch.Tensor:
+    """
+    For each tensor, duplicate it based on its loading, sample rotation matrices,
+    and apply the rotations to the duplicated tensor.
+    """
+    rotated_tensors = []
+
+    for tensor, loading in zip(tensors, loadings):
+        # Duplicate the tensor
+        duplicated_tensor = tensor.repeat(loading, 1, 1)  # Shape: (loading, X_i, 3)
+
+        # Sample rotation matrices
+        rotation_matrices = sample_rotation_matrices(loading)  # Shape: (loading, 3, 3)
+
+        # Apply rotation matrices
+        rotated_copies = torch.einsum(
+            "nij,nmj->nmi", rotation_matrices, duplicated_tensor
+        ).reshape(-1, 3)
+
+        rotated_tensors.append(rotated_copies)
+
+    rotated_tensors = torch.cat(rotated_tensors, dim=0)
+    return rotated_tensors
 
 
 def gen_edges(

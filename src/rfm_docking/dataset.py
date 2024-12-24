@@ -6,9 +6,6 @@ from torch.utils.data import Dataset
 from torch_geometric.data import Data, HeteroData
 from pymatgen.core.lattice import Lattice
 from omegaconf import ValueNode
-import h5py
-import pickle
-from io import BytesIO
 
 from tqdm import tqdm
 from multiprocessing import Pool
@@ -21,7 +18,7 @@ from rfm_docking.featurization import (
     featurize_osda,
     get_feature_dims,
 )
-from rfm_docking.utils import gen_edges, get_osda_mean_pbc
+from rfm_docking.utils import gen_edges, get_osda_mean_pbc, smiles_to_pos
 from rfm_docking.voronoi_utils import get_voronoi_nodes, cluster_voronoi_nodes
 
 
@@ -59,6 +56,9 @@ def process_one_(args):
     )
 
     smiles = row.smiles
+
+    conformer = smiles_to_pos(smiles, forcefield="mmff", device="cpu")
+
     loading = int(row.loading)
     node_feats, edge_feats, edge_index = featurize_osda(smiles)
 
@@ -202,6 +202,7 @@ def process_one_(args):
     preprocessed_dict = {
         "crystal_id": crystal_id,
         "smiles": smiles,
+        "conformer": conformer,
         "loading": loading,
         "osda_feats": (osda_node_feats, osda_edge_feats, osda_edge_indices),
         "dock_zeolite_graph_arrays": dock_zeolite_graph_arrays,
@@ -292,7 +293,7 @@ def dict_to_data(data_dict, task, prop_list, scaler, node_feat_dims):
     prop = dict()
     for p in prop_list:
         # print(p, type(data_dict[p]))
-        prop[p] = scaler[p].transform(data_dict[p]).view(1, -1)
+        prop[p] = scaler[p].transform(data_dict[p]).view(1, -1).to(dtype=torch.float32)
     (
         frac_coords,
         atom_types,
@@ -305,6 +306,7 @@ def dict_to_data(data_dict, task, prop_list, scaler, node_feat_dims):
 
     smiles = data_dict["smiles"]
     loading = data_dict["loading"]
+    conformer = data_dict["conformer"]
 
     osda_node_feats, osda_edge_feats, osda_edge_indices = data_dict["osda_feats"]
 
@@ -411,6 +413,7 @@ def dict_to_data(data_dict, task, prop_list, scaler, node_feat_dims):
     data.crystal_id = data_dict["crystal_id"]
     data.smiles = smiles
     data.loading = loading
+    data.conformer = conformer
     data.osda = osda_data
     data.zeolite = zeolite_data
     if "optimize" in task:

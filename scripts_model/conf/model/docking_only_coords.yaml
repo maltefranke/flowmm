@@ -5,4 +5,4 @@ target_distribution: unconditional
 self_cond: false
 
 manifold_getter:
-  coord_manifold: flat_torus_01_normal
+  coord_manifold: flat_torus_01

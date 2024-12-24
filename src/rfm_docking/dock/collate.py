@@ -121,6 +121,7 @@ def dock_collate_fn(
         smiles=smiles,
         osda=osda,
         zeolite=zeolite,
+        loading=batch.loading,
         x0=x0,
         x1=x1,
         lattices=lattices,
