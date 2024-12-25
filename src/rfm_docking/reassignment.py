@@ -144,7 +144,7 @@ def reassign_molecule(x0, x1):
         x1: numpy array of shape (N, M, 3), points to permute.
 
     Returns:
-        permuted_x1: numpy array of shape (N, M, 3), x1 after applying optimal permutation.
+        permuted_x0: numpy array of shape (N, M, 3), x1 after applying optimal permutation.
         row_ind: row indices corresponding to the optimal permutation.
         col_ind: column indices corresponding to the optimal permutation.
     """
@@ -153,7 +153,7 @@ def reassign_molecule(x0, x1):
     # Compute cost matrix efficiently using broadcasting
     # Expand dimensions to compute pairwise distances for all (N, N) combinations
     # Shape: (N, N, M, 3)
-    cost_vectors = FlatTorus01.logmap(x0[:, None, :], x1[None, :, :])
+    cost_vectors = FlatTorus01.logmap(x1[:, None, :], x0[None, :, :])
 
     # Shape: (N, N), sum over M and 3 dimensions
     cost_matrix = (cost_vectors**2).sum((-1, -2))
@@ -162,10 +162,10 @@ def reassign_molecule(x0, x1):
     # Solve the assignment problem
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
-    # Permute x1 based on the optimal assignment
-    permuted_x1 = x1[col_ind]
+    # Permute x0 based on the optimal assignment
+    permuted_x0 = x0[col_ind]
 
-    return permuted_x1, row_ind, col_ind
+    return permuted_x0, row_ind, col_ind
 
 
 if __name__ == "__main__":

@@ -108,12 +108,12 @@ def dock_collate_fn(
             x1_i = x1_geo[osda.batch == i].view(loading, -1, 3)
 
             # reassign x0 to x1
-            permuted_x1, _, _ = reassign_molecule(x0_i, x1_i)
-            permuted_x1 = permuted_x1.view(-1, 3)
-            x1_geo[osda.batch == i] = permuted_x1
+            permuted_x0, _, _ = reassign_molecule(x0_i, x1_i)
+            permuted_x0 = permuted_x0.view(-1, 3)
+            x0_geo[osda.batch == i] = permuted_x0
 
-        x1 = manifold_getter.georep_to_flatrep(
-            osda.batch, x1_geo, split_manifold=True
+        x0 = manifold_getter.georep_to_flatrep(
+            osda.batch, x0_geo, split_manifold=True
         ).flat
 
     batch = Batch(

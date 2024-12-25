@@ -76,9 +76,8 @@ def dual_dock_collate_fn(
             x1_i = x1_geo[com_batch == i].view(loading, -1, 3)
 
             # reassign x0 to x1
-            _, row_ind, col_ind = reassign_molecule(x0_i, x1_i)
+            permuted_x0, _, _ = reassign_molecule(x0_i, x1_i)
             # we reassign x0 because otherwise we would have to permute osda_x1 as well
-            permuted_x0 = x0_i[row_ind]
             permuted_x0 = permuted_x0.view(-1, 3)
             x0_geo[com_batch == i] = permuted_x0
 
