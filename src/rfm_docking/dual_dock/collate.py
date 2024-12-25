@@ -82,8 +82,8 @@ def dual_dock_collate_fn(
             permuted_x0 = permuted_x0.view(-1, 3)
             x0_geo[com_batch == i] = permuted_x0
 
-        com_x1 = manifold_getter.georep_to_flatrep(
-            com_batch, x1_geo, split_manifold=True
+        com_x0 = manifold_getter.georep_to_flatrep(
+            com_batch, x0_geo, split_manifold=True
         ).flat
 
     com_dock = Batch(
