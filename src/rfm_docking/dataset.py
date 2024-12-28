@@ -58,6 +58,8 @@ def process_one_(args):
     smiles = row.smiles
 
     conformer = smiles_to_pos(smiles, forcefield="mmff", device="cpu")
+    # conformer to fractional coordinates
+    conformer_frac = conformer @ inv_lattice.T
 
     loading = int(row.loading)
     node_feats, edge_feats, edge_index = featurize_osda(smiles)
@@ -202,7 +204,7 @@ def process_one_(args):
     preprocessed_dict = {
         "crystal_id": crystal_id,
         "smiles": smiles,
-        "conformer": conformer,
+        "conformer": conformer_frac,
         "loading": loading,
         "osda_feats": (osda_node_feats, osda_edge_feats, osda_edge_indices),
         "dock_zeolite_graph_arrays": dock_zeolite_graph_arrays,
@@ -356,6 +358,7 @@ def dict_to_data(data_dict, task, prop_list, scaler, node_feat_dims):
         num_atoms=num_atoms,
         num_bonds=edge_indices.shape[0],
         num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
+        num_voronoi_nodes=voronoi_nodes.shape[0],
     )
 
     if "optimize" in task:

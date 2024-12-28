@@ -104,7 +104,6 @@ def dual_dock_collate_fn(
 
     ##########################################
     # Second, we prepare the osda docking task
-    conformer = duplicate_and_rotate_tensors(conformer, batch.loading)
 
     (
         osda_x1,
@@ -117,6 +116,13 @@ def dual_dock_collate_fn(
         osda.frac_coords,
         split_manifold=True,
     )
+
+    conformer = duplicate_and_rotate_tensors(conformer, batch.loading)
+    conformer = manifold_getter.georep_to_flatrep(
+        osda.batch, conformer, split_manifold=True
+    ).flat
+    conformer = osda_manifold.projx(conformer)
+    conformer = manifold_getter.flatrep_to_georep(conformer, osda_dims, osda_mask_f).f
 
     osda.dims = osda_dims
     osda.mask_f = osda_mask_f
