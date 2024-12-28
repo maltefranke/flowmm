@@ -213,11 +213,11 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
             dims,
             mask_f,
         ) = self.manifold_getter.from_empty_batch(
-            batch.dock.batch, dim_coords, split_manifold=True
+            batch.com_dock.batch, dim_coords, split_manifold=True
         )
         num_atoms = self.manifold_getter._get_num_atoms(mask_f)
 
-        x0 = batch.dock.x0
+        x0 = batch.com_dock.x0
 
         return self.finish_sampling(
             batch=batch,
@@ -276,18 +276,23 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
         num_steps: int,
         entire_traj: bool,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        dock = batch.dock
-        optimize = batch.optimize
-        optimize_x0 = optimize.x0
+        com_dock = batch.com_dock
+        osda_dock = batch.osda_dock
 
-        dock_vecfield = partial(
-            self.com_dock_model,
-            batch=dock,
+        # translate the conformer to com_dock_x1_pred
+        atoms_per_mol = torch.repeat_interleave(
+            batch.osda_dock.num_atoms // batch.osda_dock.loading,
+            batch.osda_dock.loading,
         )
 
-        optimize_vecfield = partial(
+        com_dock_vecfield = partial(
+            self.com_dock_model,
+            batch=com_dock,
+        )
+
+        osda_dock_vecfield = partial(
             self.osda_dock_model,
-            batch=optimize,
+            batch=osda_dock,
         )
 
         compute_traj_velo_norms = self.cfg.integrate.get(
@@ -309,26 +314,32 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
             x: torch.Tensor,
             vecfield,
             manifold,
-            cond: torch.Tensor | None = None,
+            cond_coords: torch.Tensor | None = None,
+            cond_be: torch.Tensor | None = None,
         ) -> torch.Tensor:
             anneal_factor = self._annealing_schedule(t, c, b)
-            out = vecfield(
+            coord_out, _ = vecfield(
                 t=torch.atleast_2d(t),
                 x=torch.atleast_2d(x),
                 manifold=manifold,
-                cond=torch.atleast_2d(cond) if isinstance(cond, torch.Tensor) else cond,
+                cond_coords=torch.atleast_2d(cond_coords)
+                if isinstance(cond_coords, torch.Tensor)
+                else cond_coords,
+                cond_be=torch.atleast_2d(cond_be)
+                if isinstance(cond_be, torch.Tensor)
+                else cond_be,
             )
             if anneal_coords:
-                out[:, 0 : dims.f].mul_(anneal_factor)
-            return out
+                coord_out[:, 0 : dims.f].mul_(anneal_factor)
+            return coord_out
 
         if self.cfg.model.get("self_cond", False):
-            x1 = projx_cond_integrator_return_last(
-                dock.manifold,
+            com_dock_x1_pred = projx_cond_integrator_return_last(
+                com_dock.manifold,
                 partial(
                     scheduled_fn_to_integrate,
-                    vecfield=dock_vecfield,
-                    manifold=dock.manifold,
+                    vecfield=com_dock_vecfield,
+                    manifold=com_dock.manifold,
                 ),
                 x0,
                 t=torch.linspace(0, 1, num_steps + 1).to(x0.device),
@@ -339,19 +350,23 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
             )
 
             # set the docked structure as x0 for the optimization task
-            for i, num_atoms_osda in enumerate(batch.dock.num_atoms):
-                optimize_x0[i, : num_atoms_osda * 3] = x1[
-                    i, : num_atoms_osda * 3
-                ].flatten()
+            com_dock_x1_pred_expanded = torch.repeat_interleave(
+                com_dock_x1_pred, atoms_per_mol, dim=0
+            )
+
+            osda_dock_x0 = osda_dock.x0 + com_dock_x1_pred_expanded
+            osda_dock_x0 = self.manifold_getter.georep_to_flatrep(
+                batch.osda_dock.batch, osda_dock_x0, split_manifold=True
+            ).flat
 
             x1 = projx_cond_integrator_return_last(
-                optimize.manifold,
+                osda_dock.manifold,
                 partial(
                     scheduled_fn_to_integrate,
-                    vecfield=optimize_vecfield,
-                    manifold=optimize.manifold,
+                    vecfield=osda_dock_vecfield,
+                    manifold=osda_dock.manifold,
                 ),
-                optimize_x0,
+                osda_dock_x0,
                 t=torch.linspace(0, 1, num_steps + 1).to(x0.device),
                 method=self.cfg.integrate.get("method", "euler"),
                 projx=True,
@@ -362,12 +377,12 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
             return x1
 
         elif entire_traj or compute_traj_velo_norms:
-            dock_traj, vs = projx_integrator(
-                dock.manifold,
+            com_dock_traj, vs = projx_integrator(
+                com_dock.manifold,
                 partial(
                     scheduled_fn_to_integrate,
-                    vecfield=dock_vecfield,
-                    manifold=dock.manifold,
+                    vecfield=com_dock_vecfield,
+                    manifold=com_dock.manifold,
                 ),
                 x0,
                 t=torch.linspace(0, 1, num_steps + 1).to(x0.device),
@@ -377,19 +392,28 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
             )
 
             # set the docked structure as x0 for the optimization task
-            for i, num_atoms_osda in enumerate(batch.dock.num_atoms):
-                optimize_x0[i, : num_atoms_osda * 3] = dock_traj[
-                    -1, i, : num_atoms_osda * 3
-                ].flatten()
+            com_dock_x1_pred_expanded = torch.repeat_interleave(
+                self.manifold_getter.flatrep_to_georep(
+                    com_dock_traj[-1], com_dock.dims, com_dock.mask_f
+                ).f,
+                atoms_per_mol,
+                dim=0,
+            )
 
-            optimize_traj, vs = projx_integrator(
-                optimize.manifold,
+            osda_dock_x0 = osda_dock.x0 + com_dock_x1_pred_expanded
+            osda_dock_x0 = self.manifold_getter.georep_to_flatrep(
+                batch.osda_dock.batch, osda_dock_x0, split_manifold=True
+            ).flat
+            osda_dock_x0 = osda_dock.manifold.projx(osda_dock_x0)
+
+            osda_dock_traj, vs = projx_integrator(
+                osda_dock.manifold,
                 partial(
                     scheduled_fn_to_integrate,
-                    vecfield=optimize_vecfield,
-                    manifold=optimize.manifold,
+                    vecfield=osda_dock_vecfield,
+                    manifold=osda_dock.manifold,
                 ),
-                optimize_x0,
+                osda_dock_x0,
                 t=torch.linspace(0, 1, num_steps + 1).to(x0.device),
                 method=self.cfg.integrate.get("method", "euler"),
                 projx=True,
@@ -397,12 +421,12 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
             )
 
         else:
-            x1 = projx_integrator_return_last(
-                dock.manifold,
+            com_dock_x1_pred_expanded = projx_integrator_return_last(
+                com_dock.manifold,
                 partial(
                     scheduled_fn_to_integrate,
-                    vecfield=dock_vecfield,
-                    manifold=dock.manifold,
+                    vecfield=com_dock_vecfield,
+                    manifold=com_dock.manifold,
                 ),
                 x0,
                 t=torch.linspace(0, 1, num_steps + 1).to(x0.device),
@@ -413,19 +437,23 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
             )
 
             # set the docked structure as x0 for the optimization task
-            for i, num_atoms_osda in enumerate(batch.dock.num_atoms):
-                optimize_x0[i, : num_atoms_osda * 3] = x1[
-                    i, : num_atoms_osda * 3
-                ].flatten()
+            com_dock_x1_pred_expanded = torch.repeat_interleave(
+                com_dock_x1_pred, atoms_per_mol, dim=0
+            )
+
+            osda_dock_x0 = osda_dock.x0 + com_dock_x1_pred_expanded
+            osda_dock_x0 = self.manifold_getter.georep_to_flatrep(
+                batch.osda_dock.batch, osda_dock_x0, split_manifold=True
+            ).flat
 
             x1 = projx_integrator_return_last(
-                optimize.manifold,
+                osda_dock.manifold,
                 partial(
                     scheduled_fn_to_integrate,
-                    vecfield=optimize_vecfield,
-                    manifold=optimize.manifold,
+                    vecfield=osda_dock_vecfield,
+                    manifold=osda_dock.manifold,
                 ),
-                optimize_x0,
+                osda_dock_x0,
                 t=torch.linspace(0, 1, num_steps + 1).to(x0.device),
                 method=self.cfg.integrate.get("method", "euler"),
                 projx=True,
@@ -445,7 +473,7 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
             # return xs, norm_a, norm_f, norm_l
             return xs, norm_f
         elif entire_traj and not compute_traj_velo_norms:
-            return dock_traj, optimize_traj
+            return com_dock_traj, osda_dock_traj
         elif not entire_traj and compute_traj_velo_norms:
             # return xs[0], norm_a, norm_f, norm_l
             return xs[0], norm_f
@@ -675,6 +703,7 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
         )
 
         loss_f = 0.9 * com_docking_loss_f + 0.1 * osda_docking_loss_f
+        # loss_f = com_docking_loss_f
         # loss_be = 0.5 * osda_be_loss + 0.5 * com_be_loss
 
         loss = self.costs["loss_f"] * loss_f  # + loss_be
@@ -911,135 +940,71 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
             )
             norms = {"norms_a": norms_a, "norms_f": norms_f, "norms_l": norms_l}
         else:
-            dock_traj, optimize_traj = self.gen_sample(
+            com_dock_traj, osda_dock_traj = self.gen_sample(
                 batch, dim_coords, num_steps=num_steps, entire_traj=True
             )
             norms = {}
 
-        # below, we want to separate osda and zeolite trajectories for nicer visualization
-        is_osda = torch.zeros((2 * (batch.dock.batch.max() + 1)), dtype=torch.bool)
-        is_osda[::2] = 1
-
-        counts = torch.zeros_like(is_osda, dtype=torch.long)
-        counts[::2] = batch.dock.osda.num_atoms
-        counts[1::2] = batch.dock.zeolite.num_atoms
-
-        is_osda = torch.repeat_interleave(is_osda, counts)
-
-        osda_traj, zeolite_traj = [], []
-        for dock_recon_step in dock_traj:
+        com_traj, osda_traj, zeolite_traj = [], [], []
+        for com_dock_recon_step in com_dock_traj:
             f = self.manifold_getter.flatrep_to_crystal(
-                dock_recon_step, batch.dock.dims, batch.dock.mask_f
+                com_dock_recon_step, batch.com_dock.dims, batch.com_dock.mask_f
             )
+            com_traj.append(f)
+            zeolite_traj.append(batch.com_dock.zeolite.frac_coords)
+
+        for osda_dock_recon_step in osda_dock_traj:
+            f = self.manifold_getter.flatrep_to_crystal(
+                osda_dock_recon_step, batch.osda_dock.dims, batch.osda_dock.mask_f
+            )
+
             osda_traj.append(f)
-            zeolite_traj.append(batch.dock.zeolite.frac_coords)
 
-        for optimize_recon_step in optimize_traj:
-            f = self.manifold_getter.flatrep_to_crystal(
-                optimize_recon_step, batch.optimize.dims, batch.optimize.mask_f
-            )
-
-            osda_traj.append(f[is_osda])
-            zeolite_traj.append(f[~is_osda])
-
+        com_traj = torch.stack(com_traj, dim=0)
         osda_traj = torch.stack(osda_traj, dim=0)
         zeolite_traj = torch.stack(zeolite_traj, dim=0)
 
-        osda = {
-            "atom_types": batch.dock.osda.atom_types,
-            "dock_target_coords": batch.dock.osda.frac_coords,
-            "optimize_target_coords": batch.optimize.osda.frac_coords,
-            "frac_coords": osda_traj,
-            "num_atoms": batch.dock.osda.num_atoms,
-            "batch": batch.dock.osda.batch,
-        }
+        for i in range(batch.com_dock.batch.max() + 1):
+            com_dict = {
+                "atom_types": torch.ones((batch.com_dock.batch == i).sum()),
+                "target_coords": batch.com_dock.osda.center_of_mass[
+                    batch.com_dock.batch == i
+                ],
+                "frac_coords": com_traj[:, batch.com_dock.batch == i],
+            }
 
-        zeolite = {
-            "atom_types": batch.dock.zeolite.atom_types,
-            "dock_target_coords": batch.dock.zeolite.frac_coords,
-            "optimize_target_coords": batch.optimize.zeolite.frac_coords,
-            "frac_coords": zeolite_traj,
-            "batch": batch.dock.zeolite.batch,
-        }
+            osda_dict = {
+                "atom_types": batch.osda_dock.osda.atom_types[
+                    batch.osda_dock.batch == i
+                ],
+                "target_coords": batch.osda_dock.osda.frac_coords[
+                    batch.osda_dock.batch == i
+                ],
+                "frac_coords": osda_traj[:, batch.osda_dock.batch == i],
+            }
 
-        # calculate osda rmsd (per batch per atom)
-        osda_rmsds = []
-        zeolite_rmsds = []
-        zeolite_gt_rmsds = []  # NOTE gt = ground truth
-        for i in range(batch.dock.osda.batch.max() + 1):
-            lattice = lattice_params_to_matrix_torch(
-                batch.dock.lattices[i, :3].view(1, -1),
-                batch.dock.lattices[i, 3:].view(1, -1),
-            ).squeeze()
-            target_frac_coords = (
-                osda["optimize_target_coords"][batch.dock.osda.batch == i] % 1.0
-            )
-            predicted_frac_coords = osda["frac_coords"][-1, batch.dock.osda.batch == i]
+            zeolite_dict = {
+                "atom_types": batch.com_dock.zeolite.atom_types[
+                    batch.com_dock.zeolite.batch == i
+                ],
+                "target_coords": batch.com_dock.zeolite.frac_coords[
+                    batch.com_dock.zeolite.batch == i
+                ],
+                "frac_coords": zeolite_traj[:, batch.com_dock.zeolite.batch == i],
+            }
 
-            osda_rmsd_frac, reordered_target_idx = ot_reassignment(
-                # take the last frame
-                predicted_frac_coords,
-                target_frac_coords,
-                batch.dock.osda.atom_types[batch.dock.osda.batch == i],
-            )
+            out = {
+                "crystal_id": batch.crystal_id[i],
+                "smiles": batch.smiles[i],
+                "loading": batch.com_dock.loading[i],
+                "com": com_dict,
+                "osda": osda_dict,
+                "zeolite": zeolite_dict,
+                "lattices": batch.com_dock.lattices[i],
+            }
+            out.update(norms)
+            torch.save(out, f"{batch.crystal_id[i]}_traj.pt")
 
-            osda_target_coords = target_frac_coords[reordered_target_idx]
-            osda_geodesic_frac = FlatTorus01.logmap(
-                predicted_frac_coords, osda_target_coords
-            )
-            osda_geodesic_cart = torch.matmul(osda_geodesic_frac, lattice)
-            osda_distance_cart = (osda_geodesic_cart**2).sum(-1).sqrt()
-
-            osda_rmsd = (osda_distance_cart**2).mean().sqrt()
-            osda_rmsds.append(osda_rmsd)
-
-            # calculate zeolite rmsd (per batch per atom) in cartesian space
-            zeolite_initial_coords = zeolite["frac_coords"][
-                0, batch.dock.zeolite.batch == i
-            ]
-            zeolite_coords = zeolite["frac_coords"][-1, batch.dock.zeolite.batch == i]
-            zeolite_target_coords = zeolite["optimize_target_coords"][
-                batch.dock.zeolite.batch == i
-            ]
-
-            zeolite_geodesic_frac = FlatTorus01.logmap(
-                zeolite_coords, zeolite_target_coords
-            )
-            zeolite_geodesic_cart = torch.matmul(zeolite_geodesic_frac, lattice)
-            zeolite_distance_cart = (zeolite_geodesic_cart**2).sum(-1).sqrt()
-
-            zeolite_rmsd = (zeolite_distance_cart**2).mean().sqrt()
-            zeolite_rmsds.append(zeolite_rmsd)
-
-            # Next, we calculate the ground truth rmsd for the zeolite, i.e. how much the atoms have moved during optimization
-            zeolite_gt_geodesic_frac = FlatTorus01.logmap(
-                zeolite_initial_coords, zeolite_target_coords
-            )
-            zeolite_gt_geodesic_cart = torch.matmul(zeolite_gt_geodesic_frac, lattice)
-            zeolite_gt_distance_cart = (zeolite_gt_geodesic_cart**2).sum(-1).sqrt()
-
-            zeolite_gt_rmsd = (zeolite_gt_distance_cart**2).mean().sqrt()
-            zeolite_gt_rmsds.append(zeolite_gt_rmsd)
-
-        osda_rmsds = torch.stack(osda_rmsds, dim=0)
-        zeolite_rmsds = torch.stack(zeolite_rmsds, dim=0)
-        zeolite_gt_rmsds = torch.stack(zeolite_gt_rmsds, dim=0)
-
-        osda["rmsd"] = osda_rmsds
-        zeolite["rmsd"] = zeolite_rmsds
-        zeolite["ground_truth_rmsds"] = zeolite_gt_rmsds
-
-        out = {
-            "crystal_id": batch.crystal_id,
-            "smiles": batch.smiles,
-            "osda_traj": osda,
-            "zeolite": zeolite,
-            "optimize_target_coords": batch.optimize.frac_coords,
-            "lattices": batch.dock.lattices,
-            "lengths": batch.dock.lattices[:, :3],
-            "angles": batch.dock.lattices[:, 3:],
-        }
-        out.update(norms)
         return out
 
     def compute_prediction(
