@@ -83,7 +83,7 @@ def sample_uniform(osda: Batch, loading: torch.Tensor) -> torch.Tensor:
 
 
 def sample_uniform_then_gaussian(
-    osda: Batch, loading: torch.Tensor, sigma: float
+    osda: Batch, loading: torch.Tensor, sigma: torch.Tensor
 ) -> torch.Tensor:
     """Sample from a uniform distribution and then apply a Gaussian noise."""
     uniform = sample_uniform(osda, loading)
@@ -112,7 +112,6 @@ def sample_voronoi(
     osda: Batch,
     voronoi_nodes: torch.Tensor,
     num_voronoi_nodes: torch.Tensor,
-    sigma: float,
     loading: torch.Tensor,
 ) -> torch.Tensor:
     """Sample from a Voronoi diagram."""
@@ -140,8 +139,6 @@ def sample_voronoi(
 
     prior = torch.cat(prior, dim=0)
 
-    # sample from a Gaussian distribution around the Voronoi nodes
-    prior += torch.randn_like(prior) * sigma
     return prior
 
 

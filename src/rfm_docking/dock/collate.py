@@ -10,6 +10,7 @@ from rfm_docking.sampling import (
     sample_uniform,
     sample_uniform_then_conformer,
     sample_voronoi,
+    get_sigma,
 )
 from src.flowmm.rfm.manifolds.flat_torus import FlatTorus01
 
@@ -62,23 +63,29 @@ def dock_collate_fn(
         if "sampling" == "normal":
             x0 = osda_manifold.random(*x1.shape, dtype=x1.dtype, device=x1.device)
             return x0
-
-        elif sampling == "harmonic":
-            x0 = sample_harmonic_prior(osda, sigma=0.15)
         elif sampling == "uniform":
             x0 = torch.rand_like(osda.frac_coords)
+        elif sampling == "harmonic":
+            x0 = sample_harmonic_prior(osda, sigma=0.15)
         elif sampling == "uniform_then_gaussian":
-            x0 = sample_uniform_then_gaussian(osda, batch.loading, sigma=0.05)
+            sigma = get_sigma(
+                sigma_in_A=3, lattice_lenghts=osda.lengths, num_atoms=osda.num_atoms
+            )
+            x0 = sample_uniform_then_gaussian(osda, batch.loading, sigma=sigma)
         elif sampling == "uniform_then_conformer":
             x0 = sample_uniform_then_conformer(osda, smiles, batch.loading)
         elif sampling == "voronoi":
+            sigma = get_sigma(
+                sigma_in_A=3, lattice_lenghts=osda.lengths, num_atoms=osda.num_atoms
+            )
             x0 = sample_voronoi(
                 osda,
-                batch.zeolite.voronoi_nodes,
-                batch.zeolite.num_voronoi_nodes,
-                sigma=0.05,  # TODO can make this adapt to lattice scale, molecule size, ... or set as hyperparameter
+                zeolite.voronoi_nodes,
+                zeolite.num_voronoi_nodes,
                 loading=batch.loading,
             )
+            # sample from a Gaussian distribution around the Voronoi nodes
+            x0 += torch.randn_like(x0) * sigma
         else:
             raise ValueError(f"Sampling method <{sampling}> not recognized")
 
