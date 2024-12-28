@@ -10,11 +10,25 @@ from flowmm.rfm.manifolds.flat_torus import FlatTorus01
 def get_voronoi_nodes(
     zeolite_pos_frac: torch.Tensor, lattice: np.array, cutoff: float = 3
 ) -> np.array:
+    structure = Structure(
+        Lattice(lattice), ["H"] * len(zeolite_pos_frac), zeolite_pos_frac
+    )
+
+    # make 333 supercell
+    supercell = structure.make_supercell([3, 3, 3])
+
+    supercell_pos_frac = supercell.frac_coords
+
     # Compute Voronoi diagram
-    vor = Voronoi(zeolite_pos_frac)
+    vor = Voronoi(supercell_pos_frac)
 
     # Get Voronoi nodes
     voronoi_pos_frac = vor.vertices
+
+    # put 111 cell between 0 and 1/3
+    voronoi_pos_frac -= 1 / 3
+    # put 111 cell between 0 and 1
+    voronoi_pos_frac *= 3
 
     # remove voronoi nodes outside the unit cell -> they must not be wrapped back in
     is_outside = np.any(voronoi_pos_frac > 1, axis=1) | np.any(
@@ -98,3 +112,25 @@ def cluster_voronoi_nodes(
     merged_voronoi_pos = torch.cat(merged_voronoi_pos)
 
     return merged_voronoi_pos
+
+
+if __name__ == "__main__":
+    zeolite_pos_frac = torch.tensor(
+        [
+            [0.5, 0.5, 0.5],
+            [0.5, 0.5, 0.0],
+            [0.5, 0.0, 0.5],
+            [0.0, 0.5, 0.5],
+            [0.5, 0.0, 0.0],
+            [0.0, 0.5, 0.0],
+            [0.0, 0.0, 0.5],
+            [0.0, 0.0, 0.0],
+        ]
+    )
+
+    lattice = np.array([[10, 0, 0], [0, 10, 0], [0, 0, 10]])
+
+    voronoi_pos_frac = get_voronoi_nodes(zeolite_pos_frac, lattice)
+
+    merged_voronoi_pos = cluster_voronoi_nodes(voronoi_pos_frac, lattice)
+    print(merged_voronoi_pos)

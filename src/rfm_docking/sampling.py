@@ -7,6 +7,21 @@ from diffcsp.common.data_utils import (
 from rfm_docking.utils import smiles_to_pos
 
 
+def get_sigma(
+    sigma_in_A: torch.Tensor,
+    lattice_lenghts: torch.Tensor,
+    num_atoms: torch.Tensor,
+) -> torch.Tensor:
+    """Transform sigma in angstroms to sigma in fractional space for each atom."""
+    sigma_in_A = sigma_in_A * torch.ones((num_atoms.sum(), 3))
+    batch = torch.repeat_interleave(torch.arange(len(num_atoms)), num_atoms)
+
+    # sigma in fractional space
+    sigma = sigma_in_A / lattice_lenghts[batch]
+
+    return sigma
+
+
 def sample_mol_in_frac(
     smiles,
     lattice_lengths,
