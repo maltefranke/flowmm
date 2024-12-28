@@ -1,5 +1,6 @@
 import torch
 from torch_geometric.data import Batch
+import math
 import numpy as np
 from diffcsp.common.data_utils import (
     cart_to_frac_coords,
@@ -13,8 +14,14 @@ def get_sigma(
     num_atoms: torch.Tensor,
 ) -> torch.Tensor:
     """Transform sigma in angstroms to sigma in fractional space for each atom."""
-    sigma_in_A = sigma_in_A * torch.ones((num_atoms.sum(), 3))
-    batch = torch.repeat_interleave(torch.arange(len(num_atoms)), num_atoms)
+    sigma_in_A = (
+        sigma_in_A
+        * (1 / math.sqrt(3))  # makes sure vector length is sigma_in_A
+        * torch.ones((num_atoms.sum(), 3), device=lattice_lenghts.device)
+    )
+    batch = torch.repeat_interleave(
+        torch.arange(len(num_atoms), device=lattice_lenghts.device), num_atoms
+    )
 
     # sigma in fractional space
     sigma = sigma_in_A / lattice_lenghts[batch]

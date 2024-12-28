@@ -37,6 +37,7 @@ from flowmm.rfm.manifolds.spd import SPDGivenN, SPDNonIsotropicRandom
 from flowmm.rfm.vmap import VMapManifolds
 from flowmm.rfm.manifolds.flat_torus import FlatTorus01
 from rfm_docking.reassignment import ot_reassignment
+from rfm_docking.sampling import get_sigma
 
 
 def output_and_div(
@@ -677,9 +678,9 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
             batch.com_dock, model=self.com_dock_model, calculate_x1=True
         )
 
-        com_dock_x1_pred = self.manifold_getter.flatrep_to_georep(
+        """com_dock_x1_pred = self.manifold_getter.flatrep_to_georep(
             com_dock_x1_pred, batch.com_dock.dims, batch.com_dock.mask_f
-        ).f
+        ).f"""
         #####################
         # Second, we prepare the osda docking task
         # randomly rotated conformers w/ mean 0 are saved in batch.osda_dock.x0
@@ -689,11 +690,22 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
             batch.osda_dock.num_atoms // batch.osda_dock.loading,
             batch.osda_dock.loading,
         )
-        com_dock_x1_pred_expanded = torch.repeat_interleave(
+        """com_dock_x1_pred_expanded = torch.repeat_interleave(
             com_dock_x1_pred, atoms_per_mol, dim=0
-        )
+        )"""
 
-        batch.osda_dock.x0 += com_dock_x1_pred_expanded
+        com_expanded = torch.repeat_interleave(
+            batch.osda_dock.osda.center_of_mass, atoms_per_mol, dim=0
+        )
+        # noise the center of mass
+        sigma = get_sigma(
+            sigma_in_A=3,
+            lattice_lenghts=batch.osda_dock.osda.lengths,
+            num_atoms=batch.osda_dock.num_atoms,
+        )
+        com_expanded += torch.randn_like(com_expanded) * sigma
+
+        batch.osda_dock.x0 += com_expanded
         batch.osda_dock.x0 = self.manifold_getter.georep_to_flatrep(
             batch.osda_dock.batch, batch.osda_dock.x0, split_manifold=True
         ).flat
@@ -702,7 +714,7 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
             batch.osda_dock, model=self.osda_dock_model
         )
 
-        loss_f = 0.9 * com_docking_loss_f + 0.1 * osda_docking_loss_f
+        loss_f = 0.5 * com_docking_loss_f + 0.5 * osda_docking_loss_f
         # loss_f = com_docking_loss_f
         # loss_be = 0.5 * osda_be_loss + 0.5 * com_be_loss
 
