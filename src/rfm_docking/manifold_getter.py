@@ -20,6 +20,7 @@ from flowmm.rfm.manifolds.flat_torus import (
     MaskedNoDriftFlatTorus01,
     MaskedNoDriftFlatTorus01WrappedNormal,
 )
+from rfm_docking.manifolds import DockingFlatTorus01, OptimizeFlatTorus01
 from flowmm.rfm.vmap import VMapManifolds
 
 Dims = namedtuple("Dims", ["f"])
@@ -42,6 +43,8 @@ coord_manifold_types = Literal[
     "flat_torus_01_normal",
     "flat_torus_01_fixfirst",
     "flat_torus_01_fixfirst_normal",
+    "docking_flat_torus_01",
+    "optimize_flat_torus_01",
 ]
 
 
@@ -242,6 +245,24 @@ class DockingManifoldGetter(torch.nn.Module):
         elif coord_manifold == "flat_torus_01_normal":
             f_manifold = (
                 MaskedNoDriftFlatTorus01WrappedNormal(
+                    dim_coords,
+                    num_atom,
+                    max_num_atoms,
+                ),
+                dim_coords * max_num_atoms,
+            )
+        elif coord_manifold == "docking_flat_torus_01":
+            f_manifold = (
+                DockingFlatTorus01(
+                    dim_coords,
+                    num_atom,
+                    max_num_atoms,
+                ),
+                dim_coords * max_num_atoms,
+            )
+        elif coord_manifold == "optimize_flat_torus_01":
+            f_manifold = (
+                OptimizeFlatTorus01(
                     dim_coords,
                     num_atom,
                     max_num_atoms,

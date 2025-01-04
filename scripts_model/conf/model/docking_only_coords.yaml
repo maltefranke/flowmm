@@ -5,4 +5,4 @@ target_distribution: unconditional
 self_cond: false
 
 manifold_getter:
-  coord_manifold: flat_torus_01
+  coord_manifold: docking_flat_torus_01  # leaves target vector field translationally equivariant
