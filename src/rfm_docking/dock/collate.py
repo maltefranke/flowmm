@@ -79,7 +79,8 @@ def dock_collate_fn(
                 sigma_in_A=3, lattice_lenghts=osda.lengths, num_atoms=osda.num_atoms
             )
             x0 = sample_voronoi(
-                osda,
+                osda.num_atoms,
+                osda.batch,
                 zeolite.voronoi_nodes,
                 zeolite.num_voronoi_nodes,
                 loading=batch.loading,

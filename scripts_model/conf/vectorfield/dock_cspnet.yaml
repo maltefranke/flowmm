@@ -1,3 +1,6 @@
+module:
+  _target_: rfm_docking.model_pl.DockingRFMLitModule
+
 vectorfield:
   _target_: rfm_docking.architectures.DockCSPNet
   hidden_dim: 128
@@ -23,6 +26,3 @@ vectorfield:
 
 conjugate_model:
   _target_: rfm_docking.architectures.DockProjectedConjugatedCSPNet
-
-module:
-  _target_: rfm_docking.model_pl.DockingRFMLitModule

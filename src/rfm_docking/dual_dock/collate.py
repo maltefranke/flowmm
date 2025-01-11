@@ -4,7 +4,7 @@ from torch_geometric.data import Batch, HeteroData, Data
 from src.flowmm.rfm.manifolds.flat_torus import FlatTorus01
 from rfm_docking.reassignment import reassign_molecule
 from rfm_docking.manifold_getter import DockingManifoldGetter
-from rfm_docking.sampling import sample_harmonic_prior
+from rfm_docking.sampling import sample_voronoi
 from rfm_docking.featurization import get_feature_dims
 from rfm_docking.utils import duplicate_and_rotate_tensors
 
@@ -54,10 +54,23 @@ def dual_dock_collate_fn(
     osda.dims = com_dims
     osda.mask_f = com_mask_f
 
-    # sample osda in fractional space in georep (N, 3)
-    com_x0 = com_manifold.random(
-        *com_x1.shape, dtype=com_x1.dtype, device=com_x1.device
-    )
+    if sampling == "uniform":
+        com_x0 = com_manifold.random(
+            *com_x1.shape, dtype=com_x1.dtype, device=com_x1.device
+        )
+    elif sampling == "voronoi":
+        com_x0 = sample_voronoi(
+            batch.loading,
+            com_batch,
+            zeolite.voronoi_nodes,
+            zeolite.num_voronoi_nodes,
+            loading=batch.loading,
+        )
+        com_x0 = manifold_getter.georep_to_flatrep(
+            com_batch, com_x0, split_manifold=False
+        ).flat
+    else:
+        raise ValueError(f"Sampling method {sampling} not recognized")
 
     # lattices is the invariant(!!) representation of the lattice, parametrized by lengths and angles
     lattices = torch.cat([osda.lengths, osda.angles], dim=-1)

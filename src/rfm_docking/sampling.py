@@ -99,9 +99,8 @@ def sample_uniform_then_conformer(
 ) -> torch.Tensor:
     """Sample from a uniform distribution and then set the molecular conformer."""
     uniform = sample_uniform(osda, loading)
-    conformers = sample_mol_in_frac(
-        smiles, osda.lengths, osda.angles, loading, device=osda.frac_coords.device
-    )
+
+    conformers = osda.conformer
 
     prior = conformers + uniform
 
@@ -109,20 +108,21 @@ def sample_uniform_then_conformer(
 
 
 def sample_voronoi(
-    osda: Batch,
+    num_atoms: torch.Tensor,
+    batch_indices: torch.Tensor,
     voronoi_nodes: torch.Tensor,
     num_voronoi_nodes: torch.Tensor,
     loading: torch.Tensor,
 ) -> torch.Tensor:
     """Sample from a Voronoi diagram."""
 
-    atoms_per_mol = osda.num_atoms // loading
+    atoms_per_mol = num_atoms // loading
     voronoi_nodes_batch = torch.repeat_interleave(
         torch.arange(num_voronoi_nodes.shape[0]), num_voronoi_nodes
     )
 
     prior = []
-    for i in osda.batch.unique():
+    for i in batch_indices.unique():
         loading_i = loading[i]
         voronoi_nodes_i = voronoi_nodes[voronoi_nodes_batch == i]
 
