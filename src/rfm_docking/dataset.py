@@ -2,7 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, IterableDataset
 from torch_geometric.data import Data, HeteroData
 from pymatgen.core.lattice import Lattice
 from omegaconf import ValueNode
@@ -55,7 +55,7 @@ def process_one_(args):
         torch.tensor(lattice_matrix_target, dtype=torch.float32)
     )
 
-    smiles = row.smiles
+    smiles = row.ligand  # or .smiles
 
     conformer = smiles_to_pos(smiles, forcefield="mmff", device="cpu")
     # conformer to fractional coordinates
@@ -586,10 +586,11 @@ class DistributedDataset(Dataset):
 
             else:
                 # Get the number of data points in the processed file
-                cached_data = torch.load(processed_file)
+                cached_data = torch.load(processed_file, map_location="cpu")
                 self.num_data_points.append(len(cached_data))
-                # remove cached data from memory
-                del cached_data
+
+            # remove cached data from memory
+            del cached_data
 
             self.processed_files.append(processed_file)
 
@@ -611,9 +612,9 @@ class DistributedDataset(Dataset):
             idx_in_file = idx
 
         # Load data from the file
-        data_dict_list = torch.load(self.processed_files[file_idx])
-        data_dict = data_dict_list[idx_in_file]
-        del data_dict_list
+        data_dict = torch.load(self.processed_files[file_idx], map_location="cpu")[
+            idx_in_file
+        ]
 
         data = dict_to_data(
             data_dict, self.task, self.prop, self.scaler, self.node_feat_dims
@@ -623,6 +624,119 @@ class DistributedDataset(Dataset):
 
     def __repr__(self) -> str:
         return f"DistributedDataset({self.name=}, {self.path=})"
+
+
+class DistributedDatasetIterable(IterableDataset):
+    def __init__(
+        self,
+        name: ValueNode,
+        raw_data_dir: ValueNode,
+        processed_data_dir: ValueNode,
+        preprocess_workers: ValueNode,
+        prop: ValueNode,
+        lattice_scale_method: ValueNode,
+        task: ValueNode,
+        zeolite_edges: ValueNode,
+    ):
+        """
+        Initialize the dataset.
+        Args:
+            file_paths (list of str): Paths to raw data files.
+            cache_dir (str): Directory to store processed files.
+        """
+        self.name = name
+        self.task = task
+        self.raw_data_dir = raw_data_dir
+        self.processed_data_dir = processed_data_dir
+        os.makedirs(self.processed_data_dir, exist_ok=True)
+
+        node_feat_dims, edge_feat_dims = get_feature_dims()
+        self.node_feat_dims = node_feat_dims
+        self.edge_feat_dims = edge_feat_dims
+
+        self.prop = prop
+
+        file_paths = [
+            os.path.join(self.raw_data_dir, file)
+            for file in os.listdir(self.raw_data_dir)
+        ]
+
+        # Process and store data
+        self.processed_files = []
+        self.num_data_points = []
+        for file_path in file_paths:
+            processed_file = os.path.join(
+                processed_data_dir,
+                f"{os.path.splitext(os.path.basename(file_path))[0]}.pt",
+            )
+            if not os.path.exists(processed_file):
+                print(f"Processing {file_path}...")
+                cached_data = custom_preprocess(
+                    file_path,
+                    preprocess_workers,
+                    prop_list=prop,
+                    zeolite_params=zeolite_edges,
+                )
+
+                custom_add_scaled_lattice_prop(
+                    cached_data, lattice_scale_method, "dock_zeolite_graph_arrays"
+                )
+                custom_add_scaled_lattice_prop(
+                    cached_data, lattice_scale_method, "dock_osda_graph_arrays"
+                )
+
+                if "optimize" in task:
+                    custom_add_scaled_lattice_prop(
+                        cached_data,
+                        lattice_scale_method,
+                        "opt_zeolite_graph_arrays",
+                    )
+                    custom_add_scaled_lattice_prop(
+                        cached_data, lattice_scale_method, "opt_osda_graph_arrays"
+                    )
+
+                os.makedirs(os.path.dirname(processed_file), exist_ok=True)
+                torch.save(cached_data, processed_file)
+
+                self.num_data_points.append(len(cached_data))
+
+            else:
+                # Get the number of data points in the processed file
+                cached_data = torch.load(processed_file, map_location="cpu")
+                self.num_data_points.append(len(cached_data))
+
+            # remove cached data from memory
+            del cached_data
+
+            self.processed_files.append(processed_file)
+
+        # Create a cumulative index map for efficient global indexing
+        self.cumulative_sizes = np.cumsum(self.num_data_points)
+
+        self.scaler = None
+        self.lattice_scaler = None
+
+    def __iter__(self):
+        for file_idx, file_path in enumerate(self.processed_files):
+            data_dict_list = torch.load(file_path)
+            for idx, data_dict in enumerate(data_dict_list):
+                data = dict_to_data(
+                    data_dict, self.task, self.prop, self.scaler, self.node_feat_dims
+                )
+                yield data  # Stream graphs one by one
+
+    def __getitem__(self, idx):
+        file_idx = np.searchsorted(self.cumulative_sizes, idx, side="right")
+        if file_idx > 0:
+            idx_in_file = idx - self.cumulative_sizes[file_idx - 1]
+        else:
+            idx_in_file = idx
+
+        data_dict = torch.load(self.processed_files[file_idx])[idx_in_file]
+        data = dict_to_data(
+            data_dict, self.task, self.prop, self.scaler, self.node_feat_dims
+        )
+        return data
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ from torch_geometric.loader import DataLoader
 from flowmm.model.eval_utils import get_loaders
 
 # dataset_options = Literal["carbon", "mp_20", "mpts_52", "perov"]
-dataset_options = Literal["test_data"]
+dataset_options = Literal["dual_docking_data"]
 
 
 def init_cfg(
