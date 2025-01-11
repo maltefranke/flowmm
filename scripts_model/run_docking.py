@@ -38,6 +38,7 @@ resource.setrlimit(resource.RLIMIT_NOFILE, (4096, rlimit[1]))
 
 torch.multiprocessing.set_sharing_strategy("file_system")
 
+torch.backends.cudnn.benchmark = True
 
 try:
     WANDB_MODE = os.environ["WANDB_MODE"]

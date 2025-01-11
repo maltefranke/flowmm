@@ -11,7 +11,7 @@ logging:
     project: rfmcsp-${model.target_distribution}-${hydra:runtime.choices.data}
     entity: null
     log_model: True
-    mode: 'online'
+    mode: 'offline'
     group: ${hydra:runtime.choices.model}-${hydra:runtime.choices.vectorfield}-${generate_id:}
 
   wandb_watch:
@@ -26,7 +26,7 @@ optim:
   # RFM
   optimizer:
     _target_: torch.optim.AdamW
-    lr: 1e-1
+    lr: 1e-2
     weight_decay: 0.0
   lr_scheduler:
     _target_: torch.optim.lr_scheduler.CosineAnnealingLR
@@ -39,7 +39,7 @@ train:
   # reproducibility
   deterministic: warn
   random_seed: 42
-  sampling: harmonic
+  sampling: uniform
   strategy: ddp
   
   # training
@@ -85,7 +85,7 @@ test:
 integrate:
   div_mode: rademacher  # "exact" is an alternative
   method: euler # heun
-  num_steps: 100 # 0_100 
+  num_steps: 50 # 0_100 
   normalize_loglik: True  # this is normalized by dimension
   inference_anneal_slope: 0.0
   inference_anneal_offset: 0.0
@@ -93,7 +93,7 @@ integrate:
 
 defaults:
   - _self_
-  - data: docking # dock_then_optimize # docking 
+  - data: dual_docking_data_distributed # dock_then_optimize # docking 
   - model: docking_only_coords # null_params_for_testing # docking_only_coords
-  - vectorfield: dock_cspnet # dock_then_optimize_cspnet # dock_cspnet # cspnet # rfm_cspnet 
+  - vectorfield: dual_docking_cspnet # dock_then_optimize_cspnet # dock_cspnet # cspnet # rfm_cspnet 
   - hydra: trash
