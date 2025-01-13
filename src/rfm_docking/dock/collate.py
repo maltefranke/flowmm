@@ -5,7 +5,6 @@ from torch_geometric.loader.dataloader import Collater
 from rfm_docking.reassignment import reassign_molecule
 from rfm_docking.manifold_getter import DockingManifoldGetter
 from rfm_docking.sampling import (
-    sample_harmonic_prior,
     sample_uniform_then_gaussian,
     sample_uniform,
     sample_uniform_then_conformer,
@@ -13,6 +12,7 @@ from rfm_docking.sampling import (
     get_sigma,
 )
 from src.flowmm.rfm.manifolds.flat_torus import FlatTorus01
+from rfm_docking.utils import duplicate_and_rotate_tensors
 
 
 def dock_collate_fn(
@@ -22,6 +22,8 @@ def dock_collate_fn(
     sampling="normal",
 ) -> HeteroData:
     """Where the magic happens"""
+
+    conformer = [i.conformer for i in batch]
 
     batch = Batch.from_data_list(batch)
 
@@ -65,16 +67,23 @@ def dock_collate_fn(
             return x0
         elif sampling == "uniform":
             x0 = torch.rand_like(osda.frac_coords)
-        elif sampling == "harmonic":
-            x0 = sample_harmonic_prior(osda, sigma=0.15)
         elif sampling == "uniform_then_gaussian":
             sigma = get_sigma(
                 sigma_in_A=3, lattice_lenghts=osda.lengths, num_atoms=osda.num_atoms
             )
             x0 = sample_uniform_then_gaussian(osda, batch.loading, sigma=sigma)
         elif sampling == "uniform_then_conformer":
+            conformer = duplicate_and_rotate_tensors(conformer, batch.loading)
+            conformer = manifold_getter.georep_to_flatrep(
+                osda.batch, conformer, split_manifold=True
+            ).flat
+            conformer = osda_manifold.projx(conformer)
+            conformer = manifold_getter.flatrep_to_georep(
+                conformer, osda_dims, osda_mask_f
+            ).f
+            osda.conformer = conformer
             x0 = sample_uniform_then_conformer(osda, smiles, batch.loading)
-        elif sampling == "voronoi":
+        elif "voronoi" in sampling:
             sigma = get_sigma(
                 sigma_in_A=3, lattice_lenghts=osda.lengths, num_atoms=osda.num_atoms
             )
@@ -85,9 +94,28 @@ def dock_collate_fn(
                 zeolite.num_voronoi_nodes,
                 loading=batch.loading,
             )
-            # sample from a Gaussian distribution around the Voronoi nodes
-            x0 += torch.randn_like(x0) * sigma
+            if sampling == "voronoi_then_gaussian":
+                # sample from a Gaussian distribution around the Voronoi nodes
+                x0 += torch.randn_like(x0) * sigma
+            elif sampling == "voronoi_then_conformer":
+                conformer = duplicate_and_rotate_tensors(conformer, batch.loading)
+                conformer = manifold_getter.georep_to_flatrep(
+                    osda.batch, conformer, split_manifold=True
+                ).flat
+                conformer = osda_manifold.projx(conformer)
+                conformer = manifold_getter.flatrep_to_georep(
+                    conformer, osda_dims, osda_mask_f
+                ).f
+                x0 += conformer
         else:
+            conformer = duplicate_and_rotate_tensors(conformer, batch.loading)
+            conformer = manifold_getter.georep_to_flatrep(
+                osda.batch, conformer, split_manifold=True
+            ).flat
+            conformer = osda_manifold.projx(conformer)
+            conformer = manifold_getter.flatrep_to_georep(
+                conformer, osda_dims, osda_mask_f
+            ).f
             raise ValueError(f"Sampling method <{sampling}> not recognized")
 
         # (N, 3) -> (N*3, )
