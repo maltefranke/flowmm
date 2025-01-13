@@ -23,7 +23,7 @@ def dock_collate_fn(
 ) -> HeteroData:
     """Where the magic happens"""
 
-    conformer = [i.conformer for i in batch]
+    conformers = [i.conformer for i in batch]
 
     batch = Batch.from_data_list(batch)
 
@@ -73,7 +73,7 @@ def dock_collate_fn(
             )
             x0 = sample_uniform_then_gaussian(osda, batch.loading, sigma=sigma)
         elif sampling == "uniform_then_conformer":
-            conformer = duplicate_and_rotate_tensors(conformer, batch.loading)
+            conformer = duplicate_and_rotate_tensors(conformers, batch.loading)
             conformer = manifold_getter.georep_to_flatrep(
                 osda.batch, conformer, split_manifold=True
             ).flat
@@ -98,7 +98,7 @@ def dock_collate_fn(
                 # sample from a Gaussian distribution around the Voronoi nodes
                 x0 += torch.randn_like(x0) * sigma
             elif sampling == "voronoi_then_conformer":
-                conformer = duplicate_and_rotate_tensors(conformer, batch.loading)
+                conformer = duplicate_and_rotate_tensors(conformers, batch.loading)
                 conformer = manifold_getter.georep_to_flatrep(
                     osda.batch, conformer, split_manifold=True
                 ).flat
@@ -107,15 +107,9 @@ def dock_collate_fn(
                     conformer, osda_dims, osda_mask_f
                 ).f
                 x0 += conformer
+            else:
+                raise ValueError(f"Voronoi sampling <{sampling}> not recognized")
         else:
-            conformer = duplicate_and_rotate_tensors(conformer, batch.loading)
-            conformer = manifold_getter.georep_to_flatrep(
-                osda.batch, conformer, split_manifold=True
-            ).flat
-            conformer = osda_manifold.projx(conformer)
-            conformer = manifold_getter.flatrep_to_georep(
-                conformer, osda_dims, osda_mask_f
-            ).f
             raise ValueError(f"Sampling method <{sampling}> not recognized")
 
         # (N, 3) -> (N*3, )
