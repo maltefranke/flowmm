@@ -16,11 +16,12 @@ cd ~/flowmm/
 
 export PYTHONPATH="${PYTHONPATH}:~/flowmm"
 
-export sampling="uniform"
+## Below will be set in the run_all_experiments.sh script, uncomment to run this script individually
+#export sampling="uniform"
+#export ot="true"
 
-export data="dual_docking_data_distributed"
-export model="docking_only_coords"
-export vectorfield="dual_docking_cspnet"
-export ot="true"
+#export data="dual_docking_data_distributed"
+#export model="docking_only_coords"
+#export vectorfield="dual_docking_cspnet"
 
 python scripts_model/run_docking.py data="$data" model="$model" vectorfield="$vectorfield" train.sampling="$sampling" data.datamodule.do_ot="$ot"
