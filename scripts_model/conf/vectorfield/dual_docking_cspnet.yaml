@@ -3,8 +3,8 @@ module:
 
 com_dock_vectorfield:
   _target_: rfm_docking.dual_dock.architectures.DockCSPNet
-  hidden_dim: 256
-  time_dim: 128
+  hidden_dim: 64
+  time_dim: 64
   num_layers: 3
   act_fn: silu
   dis_emb: sin
@@ -15,12 +15,12 @@ com_dock_vectorfield:
   self_cond: ${model.self_cond}
 
   osda_edges:
-    edge_style: fc
+    edge_style: knn
     max_neighbors: 20
-    cutoff: 15.
+    cutoff: 50.
   cross_edges:
-    edge_style: fc
-    max_neighbors: 10
+    edge_style: knn
+    max_neighbors: 20
     cutoff: 15.
 
 com_dock_model:
@@ -29,8 +29,8 @@ com_dock_model:
 
 osda_dock_vectorfield:
   _target_: rfm_docking.architectures.DockCSPNet
-  hidden_dim: 256
-  time_dim: 128
+  hidden_dim: 64
+  time_dim: 64
   num_layers: 3
   act_fn: silu
   dis_emb: sin

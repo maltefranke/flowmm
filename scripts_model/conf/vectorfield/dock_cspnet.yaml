@@ -16,12 +16,12 @@ vectorfield:
   drop_be_prob: 1.0
 
   osda_edges:
-    edge_style: fc
+    edge_style: knn
     max_neighbors: 20
     cutoff: 15.
   cross_edges:
     edge_style: knn
-    max_neighbors: 10
+    max_neighbors: 20
     cutoff: 15.
 
 conjugate_model:

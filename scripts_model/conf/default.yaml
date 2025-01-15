@@ -6,7 +6,7 @@ core:
 
 logging:
   # log frequency
-  val_check_interval: 10
+  val_check_interval: 50
   wandb:
     project: rfmcsp-${model.target_distribution}-${hydra:runtime.choices.data}
     entity: null
@@ -31,7 +31,7 @@ optim:
   lr_scheduler:
     _target_: torch.optim.lr_scheduler.CosineAnnealingLR
     T_max: ${data.train_max_epochs}
-    eta_min: 5e-3
+    eta_min: 2e-3
   interval: epoch
   ema_decay: 0.999
 
@@ -40,13 +40,13 @@ train:
   deterministic: warn
   random_seed: 42
   sampling: uniform
-  strategy: ddp
+  strategy: auto
   
   # training
   pl_trainer:
     fast_dev_run: False # Enable this for debug purposes
-    devices: auto
-    # devices: 1
+    # devices: auto
+    devices: 1
     accelerator: gpu
     precision: 32
     # max_steps: 10000
@@ -70,7 +70,7 @@ train:
     save_last: False
 
   every_n_epochs_checkpoint:
-    every_n_epochs: 1
+    every_n_epochs: 500
     save_top_k: -1
     verbose: False
     save_last: False

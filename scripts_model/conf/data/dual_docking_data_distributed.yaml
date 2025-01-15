@@ -64,16 +64,16 @@ datamodule:
     test: 0
 
   batch_size:
-    train: 384
-    val: 384
-    test: 384
+    train: 512
+    val: 512
+    test: 512
 
   coord_manifold: ${model.manifold_getter.coord_manifold}
   dataset_name: ${data.dataset_name}
 
   collate:
-    _target_: src.rfm_docking.dock.collate.DockCollater
+    _target_: src.rfm_docking.dual_dock.collate.DualDockCollater
 
-  do_ot: false
+  do_ot: true
 
   sampling: ${train.sampling}

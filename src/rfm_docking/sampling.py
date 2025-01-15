@@ -20,7 +20,7 @@ def get_sigma(
         * torch.ones((num_atoms.sum(), 3), device=lattice_lenghts.device)
     )
     batch = torch.repeat_interleave(
-        torch.arange(len(num_atoms), device=lattice_lenghts.device), num_atoms
+        torch.arange(num_atoms.shape[0], device=lattice_lenghts.device), num_atoms
     )
 
     # sigma in fractional space
@@ -129,6 +129,13 @@ def sample_voronoi(
         # draw random voronoi nodes based on loading
         random_indices = torch.randperm(voronoi_nodes_i.shape[0])
         draw_voronoi_nodes = voronoi_nodes_i[random_indices, :][:loading_i, :]
+
+        if draw_voronoi_nodes.shape[0] / (loading_i) < 1:
+            # in case there are fewer voronoi nodes than molecules, should be extremely rare
+            difference = loading_i - draw_voronoi_nodes.shape[0]
+            draw_voronoi_nodes = torch.cat(
+                [draw_voronoi_nodes, draw_voronoi_nodes[:difference]], dim=0
+            )
 
         # expand to match the number of atoms in the molecule
         draw_voronoi_nodes = torch.repeat_interleave(
