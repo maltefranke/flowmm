@@ -637,6 +637,7 @@ class DistributedDatasetIterable(IterableDataset):
         lattice_scale_method: ValueNode,
         task: ValueNode,
         zeolite_edges: ValueNode,
+        shuffle=True,
     ):
         """
         Initialize the dataset.
@@ -719,6 +720,8 @@ class DistributedDatasetIterable(IterableDataset):
     def __iter__(self):
         for file_idx, file_path in enumerate(self.processed_files):
             data_dict_list = torch.load(file_path)
+            if self.shuffle:
+                np.random.shuffle(data_dict_list)
             for idx, data_dict in enumerate(data_dict_list):
                 data = dict_to_data(
                     data_dict, self.task, self.prop, self.scaler, self.node_feat_dims

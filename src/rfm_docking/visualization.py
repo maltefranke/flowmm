@@ -7,6 +7,12 @@ import torch
 import pandas as pd
 import numpy as np
 import argparse
+import math
+import tempfile
+
+from ovito.io import import_file
+from ovito.vis import Viewport, TachyonRenderer
+from ovito.modifiers import CreateBondsModifier
 
 from diffcsp.common.data_utils import lattice_params_to_matrix_torch
 from flowmm.rfm.manifolds.flat_torus import FlatTorus01
@@ -89,12 +95,17 @@ def create_gif_from_traj(
         elif structure_type == "all_pred_and_none_target":
             atoms_i = torch.cat([osda_atoms_i, zeolite_atoms_i])
             coords_i = torch.cat([osda_coords_i, zeolite_coords_i])
+        elif structure_type == "all_target":
+            atoms_i = torch.cat([osda_atoms_i, zeolite_atoms_i])
+            coords_i = torch.cat([osda_target_coords, zeolite_coords_i])
 
         predicted = Atoms(
             atoms_i, scaled_positions=coords_i, cell=tuple(lattice.squeeze().tolist())
         )
         # save as CIF file 
-        write(output_gif.split(".")[0] + f"_{structure_type}_{frame_idx}.cif", predicted, format="cif")
+        # write(output_gif.split(".")[0] + f"_{structure_type}_{frame_idx}.cif", predicted, format="cif")
+
+    
 
         """# TODO add some distincting color for the target
         for i, target_atom in enumerate(osda_atoms):
@@ -103,6 +114,8 @@ def create_gif_from_traj(
 
         structures.append(predicted)
 
+    write(output_gif.split(".")[0] + f"_{structure_type}_final.cif", structures[-1], format="cif")
+    # exit(0)
     traj = InMemoryTrajectory()
     for atoms in structures:
         traj.write(atoms)
@@ -110,6 +123,152 @@ def create_gif_from_traj(
     write(output_gif.split(".")[0] + "_303030.gif", traj, rotation="30x,30y,30z", interval=1)
     write(output_gif.split(".")[0] + "_606060.gif", traj, rotation="60x,60y,60z", interval=1)
     print(f"GIF saved as {output_gif}")
+
+
+def create_gif_from_traj_ovito(
+    traj_file, output_gif, frame_rate=2, zeolite_transparency=0.05, target_color=(0, 1, 0)
+):
+    data = torch.load(traj_file, map_location="cpu")
+    try:
+        lattice = data["lattices"] # gen_trajectory 
+    except TypeError:
+        data = data[0][0]
+        lattice = data["lattices"] # recon_trajectory
+
+    loading = data["loading"]
+    osda = data["osda"]
+    
+    osda_target_coords = osda["target_coords"] % 1.0
+    osda_atoms = osda["atom_types"]
+
+    zeolite = data["zeolite"]
+    zeolite_atoms = zeolite["atom_types"]
+    if zeolite["frac_coords"].shape[0] == 1:
+        zeolite["frac_coords"] = zeolite["frac_coords"].repeat(
+            osda["frac_coords"].shape[0], 1, 1
+        )
+
+    # create temp dir for cifs
+    tmpdir = tempfile.TemporaryDirectory()
+
+    zeolite_file = f"{tmpdir.name}/zeolite.cif"
+    target_file = f"{tmpdir.name}/target.cif"
+
+    zeolite_coords = zeolite["frac_coords"][0]
+
+    zeolite_ase = Atoms(
+        zeolite_atoms, scaled_positions=zeolite_coords, cell=tuple(lattice.squeeze().tolist())
+    )
+    write(zeolite_file, zeolite_ase, format="cif")
+
+    target_ase = Atoms(
+        osda_atoms, scaled_positions=osda_target_coords, cell=tuple(lattice.squeeze().tolist())
+    )
+    write(target_file, target_ase, format="cif")
+
+    cif_files = []
+    if "com" in data.keys():
+        for frame_idx, com_coords in enumerate(data["com"]["frac_coords"]):
+            com_atoms = 50*torch.ones((com_coords.shape[0]))
+            predicted = Atoms(com_atoms, scaled_positions=com_coords, cell=tuple(lattice.squeeze().tolist()))
+
+            write(
+                f"{tmpdir.name}/com_frame_{frame_idx:03d}.cif",
+                predicted,
+                format="cif",
+            )
+            cif_files.append(f"{tmpdir.name}/com_frame_{frame_idx:03d}.cif")
+
+    for frame_idx, osda_coords in enumerate(osda["frac_coords"]
+    ):
+    
+        predicted = Atoms(osda_atoms, scaled_positions=osda_coords, cell=tuple(lattice.squeeze().tolist())
+    )
+
+        write(
+            f"{tmpdir.name}/osda_frame_{frame_idx:03d}.cif",
+            predicted,
+            format="cif",
+        )
+        cif_files.append(f"{tmpdir.name}/osda_frame_{frame_idx:03d}.cif")
+
+    # Load the static structures (zeolite and target molecule) into separate data collections
+    pipeline_complex = import_file(zeolite_file)
+    pipeline_target = import_file(target_file)
+
+    # Apply transparency to the zeolite atoms
+    def set_complex_transparency(frame: int, data):
+        particles = data.make_mutable(data.particles)
+        if "Transparency" not in particles:
+            particles.create_property("Transparency")
+        transparency = particles["Transparency"].marray
+        transparency[:] = zeolite_transparency  # Apply the transparency to all zeolite atoms
+
+    pipeline_complex.modifiers.append(set_complex_transparency)
+
+    # Apply color to target atoms
+    def set_target_color(frame: int, data):
+        particles = data.make_mutable(data.particles)
+        if "Color" not in particles:
+            particles.create_property("Color")
+        colors = particles["Color"].marray
+        colors[:] = target_color  # Set all particles to the specified color
+
+    # cell_vis_complex = pipeline_complex.source.data.cell.vis
+    # cell_vis_complex.render_cell = False
+
+    #pipeline_target.modifiers.append(set_target_color)
+    #cell_vis_target = pipeline_target.source.data.cell.vis
+    #cell_vis_target.render_cell = False
+
+    # Function to combine static zeolite, target, and moving molecule in each frame
+    def combine_structures(
+        frame: int,
+        data,
+    ):
+        # Load the moving structure for the current frame
+        frame_pipe = import_file(cif_files[frame])
+        cell_vis_frame = frame_pipe.source.data.cell.vis
+        cell_vis_frame.render_cell = False
+
+        # bond_vis = CreateBondsModifier()
+        # frame_pipe.modifiers.append(bond_vis)
+
+        data.objects.append(frame_pipe.compute())
+
+        # Merge zeolite, target molecule, and moving structure
+        #data.objects.append(pipeline_target.compute())
+
+    # Assign the custom modifier to the pipeline to combine structures for each frame
+    pipeline_complex.modifiers.append(combine_structures)
+
+    #bond_modifier = CreateBondsModifier()
+    # pipeline_complex.modifiers.append(bond_modifier)
+
+    pipeline_complex.add_to_scene()
+
+    pipeline_complex.rotation = (math.radians(30), math.radians(30), math.radians(30))
+
+    # Prepare the viewport for rendering
+    vp = Viewport(type=Viewport.Type.Perspective)
+
+    vp.zoom_all()
+
+    # Set up rendering and save as GIF
+    vp.render_anim(
+        output_gif + ".gif",
+        renderer=TachyonRenderer(),
+        size=(800, 600),
+        fps=frame_rate,
+        range=(0, len(cif_files) - 1),
+        background=(1, 1, 1),
+    )
+
+    pipeline_complex.remove_from_scene()
+
+    # close tempdir
+    tmpdir.cleanup()
+    
 
 
 def show_ground_truth(crystal_id):
@@ -167,14 +326,22 @@ def vis_struc(atoms, frac_coords, lattice, name):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    """parser = argparse.ArgumentParser()
     parser.add_argument("--traj_file", type=str, required=True)
     parser.add_argument("--output_gif", type=str, required=True)
     parser.add_argument("--structure_type", type=str, default="osda_pred_and_osda_target")
     args = parser.parse_args()
     os.makedirs(os.path.dirname(args.output_gif), exist_ok=True)
-    create_gif_from_traj(args.traj_file, args.output_gif, args.structure_type)
+    create_gif_from_traj(args.traj_file, args.output_gif, args.structure_type)"""
 
+    # name = "138431981_traj.pt"
+    # name = "138489232_traj.pt"
+    name = "137127032_traj.pt"
+    sampling = "uniform_then_gaussian"
+
+    create_gif_from_traj_ovito(f"/home/malte/flowmm/models/Docking/{sampling}/noOT/results_model3k5/test_1/2412/{name}", 
+                               f"/home/malte/flowmm/models/Docking/{sampling}/noOT/ovito_test", 
+                               frame_rate=10, zeolite_transparency=0.4, target_color=(0, 1, 0))
     # malte 
     
     # show_ground_truth(536467517)

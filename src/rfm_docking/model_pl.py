@@ -792,10 +792,11 @@ class DockingRFMLitModule(ManifoldFMLitModule):
         dim_coords: int = 3,
         num_steps: int = 1_000,
     ) -> dict[str, torch.Tensor | Data]:
+        batch_size = batch.osda.batch.max() + 1
         *_, dims, mask_f = self.manifold_getter.from_empty_batch(
             batch.batch, dim_coords, split_manifold=False
         )
-
+        time_start = time.time()
         if self.cfg.integrate.get("compute_traj_velo_norms", False):
             recon, norms_a, norms_f, norms_l = self.gen_sample(
                 batch.batch,
@@ -809,6 +810,8 @@ class DockingRFMLitModule(ManifoldFMLitModule):
                 batch, dim_coords, num_steps=num_steps, entire_traj=True
             )
             norms = {}
+        time_end = time.time()
+        time_per_sample = (time_end - time_start) / batch_size
 
         frac_coords = []
         for recon_step in recon:
@@ -842,7 +845,7 @@ class DockingRFMLitModule(ManifoldFMLitModule):
 
         # calculate osda rmsd (per batch per atom)
         # NOTE gt = ground truth
-        for i in range(batch.osda.batch.max() + 1):
+        for i in range(batch_size):
             osda = {
                 "atom_types": batch.osda.atom_types[batch.osda.batch == i],
                 "target_coords": batch.osda.frac_coords[batch.osda.batch == i],
@@ -912,6 +915,7 @@ class DockingRFMLitModule(ManifoldFMLitModule):
                 "lattices": batch.lattices[i],
                 "lengths": batch.lattices[i, :3],
                 "angles": batch.lattices[i, 3:],
+                "time_per_sample": time_per_sample
             }
 
             torch.save(out, f"{batch.crystal_id[i]}_traj.pt")

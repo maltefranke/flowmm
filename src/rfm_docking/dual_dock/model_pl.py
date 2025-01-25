@@ -943,6 +943,9 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
         dim_coords: int = 3,
         num_steps: int = 1_000,
     ) -> dict[str, torch.Tensor | Data]:
+        batch_size = batch.osda_dock.batch.max() + 1
+        
+        time_start = time.time()
         if self.cfg.integrate.get("compute_traj_velo_norms", False):
             recon, norms_a, norms_f, norms_l = self.gen_sample(
                 batch.batch,
@@ -956,6 +959,9 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
                 batch, dim_coords, num_steps=num_steps, entire_traj=True
             )
             norms = {}
+
+        time_end = time.time()
+        time_per_sample = (time_end - time_start) / batch_size
 
         com_traj, osda_traj, zeolite_traj = [], [], []
         for com_dock_recon_step in com_dock_traj:
@@ -976,7 +982,7 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
         osda_traj = torch.stack(osda_traj, dim=0)
         zeolite_traj = torch.stack(zeolite_traj, dim=0)
 
-        for i in range(batch.com_dock.batch.max() + 1):
+        for i in range(batch_size):
             com_dict = {
                 "atom_types": torch.ones((batch.com_dock.batch == i).sum()),
                 "target_coords": batch.com_dock.osda.center_of_mass[
@@ -1013,6 +1019,7 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
                 "osda": osda_dict,
                 "zeolite": zeolite_dict,
                 "lattices": batch.com_dock.lattices[i],
+                "time_per_sample": time_per_sample,
             }
             out.update(norms)
             torch.save(out, f"{batch.crystal_id[i]}_traj.pt")
