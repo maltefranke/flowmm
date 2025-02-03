@@ -661,6 +661,7 @@ class DistributedDatasetIterable(IterableDataset):
             os.path.join(self.raw_data_dir, file)
             for file in os.listdir(self.raw_data_dir)
         ]
+        self.shuffle = shuffle
 
         # Process and store data
         self.processed_files = []

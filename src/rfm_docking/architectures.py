@@ -323,16 +323,6 @@ class DockCSPNet(CSPNet):
         osda_frac_diff = torch.cat([osda_frac_diff, osda_internal_frac_diff], dim=0)
 
         # for zeolite
-        """zeolite_edges, zeolite_frac_diff = gen_edges(
-            batch.zeolite.num_atoms,
-            batch.zeolite.frac_coords,
-            batch.lattices,
-            batch.zeolite.batch,
-            edge_style=self.zeolite_edge_style,
-            radius=self.zeolite_cutoff,
-            max_neighbors=self.zeolite_max_neighbors,
-            self_edges=self.self_edges,
-        )"""
         zeolite_edges = batch.zeolite.edge_index
 
         zeolite_frac_diff = FlatTorus01.logmap(
@@ -508,6 +498,17 @@ class OptimizeCSPNet(CSPNet):
             batch.num_atoms.shape[0], -1
         )  # if there is a single t, repeat for the batch
 
+        be_in = batch.y["bindingatoms"].float()
+        with torch.no_grad():
+            be_in = torch.where(
+                torch.rand_like(be_in) < self.drop_be_prob,
+                torch.zeros_like(be_in),
+                be_in,
+            )
+        be_emb = self.be_emb(be_in.view(-1, 1))
+        be_emb = be_emb.expand(batch.num_atoms.shape[0], -1)
+        be_per_atom = be_emb.repeat_interleave(batch.num_atoms.to(t_emb.device), dim=0)
+
         edge_feat_dims = get_feature_dims()[-1]
         dummy_edge_ids = (
             torch.tensor(edge_feat_dims, device=t_emb.device) - 1
@@ -516,24 +517,28 @@ class OptimizeCSPNet(CSPNet):
         # create graph
         edges, frac_diff = gen_edges(
             batch.num_atoms,
-            batch.frac_coords,
+            batch.xt,
             batch.lattices,
             batch.batch,
-            edge_style="knn",  # NOTE fc = fully connected
-            radius=self.cutoff,
+            edge_style=self.cross_edge_style,  # NOTE fc = fully connected
+            radius=self.cross_cutoff,
+            max_neighbors=self.cross_max_neighbors,
             self_edges=self.self_edges,
         )
         dummy_edge_feats = dummy_edge_ids.repeat(edges.shape[1], 1)
 
-        edges = torch.cat([edges, batch.edge_index], dim=1)
-        edge_feats = torch.cat([dummy_edge_feats, batch.edge_feats], dim=0)
+        # TODO disable for now
+        # edges = torch.cat([edges, batch.edge_index], dim=1)
+        # edge_feats = torch.cat([dummy_edge_feats, batch.edge_feats], dim=0)
+        edge_feats = dummy_edge_feats
+
         edge_feats = self.edge_embedding(edge_feats)
 
-        distance_vectors = FlatTorus01.logmap(
-            batch.frac_coords[batch.edge_index[0]],
-            batch.frac_coords[batch.edge_index[1]],
+        """distance_vectors = FlatTorus01.logmap(
+            batch.xt[edges[0]],
+            batch.xt[edges[1]],
         )
-        frac_diff = torch.cat([frac_diff, distance_vectors], dim=0)
+        frac_diff = torch.cat([frac_diff, distance_vectors], dim=0)"""
 
         edge2graph = batch.batch[edges[0]]
 
@@ -543,10 +548,7 @@ class OptimizeCSPNet(CSPNet):
         t_per_atom = t_emb.repeat_interleave(batch.num_atoms.to(t_emb.device), dim=0)
 
         node_features = torch.cat(
-            [
-                node_features,
-                t_per_atom,
-            ],
+            [node_features, t_per_atom, be_per_atom],
             dim=1,
         )
         node_features = self.atom_latent_emb(node_features)
@@ -565,7 +567,15 @@ class OptimizeCSPNet(CSPNet):
         # predict coords
         coord_out = self.coord_out(node_features)
 
-        return coord_out
+        be_node_features = scatter(
+            node_features,
+            batch.batch,
+            dim=0,
+            reduce="mean",
+        )
+        be_out = self.be_out(be_node_features)
+
+        return coord_out, be_out
 
 
 class ProjectedConjugatedCSPNet(nn.Module):

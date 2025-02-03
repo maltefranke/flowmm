@@ -1,15 +1,8 @@
 import torch
 from torch_geometric.data import Batch, HeteroData, Data
-from torch_geometric.loader.dataloader import Collater
 
-from rfm_docking.reassignment import reassign_molecule
 from rfm_docking.manifold_getter import DockingManifoldGetter
 from rfm_docking.sampling import (
-    sample_harmonic_prior,
-    sample_uniform_then_gaussian,
-    sample_uniform,
-    sample_uniform_then_conformer,
-    sample_voronoi,
     get_sigma,
 )
 from src.flowmm.rfm.manifolds.flat_torus import FlatTorus01
@@ -19,7 +12,7 @@ def optimize_collate_fn(
     batch: list[HeteroData],
     manifold_getter: DockingManifoldGetter,
     do_ot: bool = False,
-    sampling="normal",
+    sampling="uniform",
 ) -> HeteroData:
     """Where the magic happens"""
 
@@ -91,10 +84,14 @@ def optimize_collate_fn(
         for osda_dock, zeolite_dock in zip(batch.osda, batch.zeolite)
     ]
     x0 = torch.cat(x0, dim=0)
+    # add a tiny bit of noise to the initial configuration
+    sigma = get_sigma(
+        sigma_in_A=0.1, lattice_lenghts=osda.lengths, num_atoms=optimize_batch.num_atoms
+    )
+    x0 += torch.randn_like(x0) * sigma
 
-    # TODO maybe noise the coords a bit here?
-    # sigma = get_sigma(sigma_in_A=0.25, lattice_lenghts=osda.lengths, num_atoms=optimize_batch.num_atoms)
-    # x0 += torch.randn_like(x0) * sigma
+    x0 = manifold_getter.georep_to_flatrep(optimize_batch.batch, x0, False).flat
+
     x0 = FlatTorus01.projx(x0)
 
     # lattices is the invariant(!!) representation of the lattice, parametrized by lengths and angles
@@ -105,10 +102,11 @@ def optimize_collate_fn(
         smiles=smiles,
         osda=osda,
         zeolite=zeolite,
-        loading=optimize_batch.loading,
+        loading=batch.loading,
         x0=x0,
         x1=x1,
         lattices=lattices,
+        node_feats=optimize_batch.node_feats,
         num_atoms=optimize_batch.num_atoms,
         manifold=optimize_manifold,
         f_manifold=optimize_f_manifold,
@@ -125,7 +123,7 @@ class OptimizeCollater:
         self,
         manifold_getter: DockingManifoldGetter,
         do_ot: bool = False,
-        sampling: str = "normal",
+        sampling: str = "uniform",
     ):
         self.manifold_getter = manifold_getter
         self.do_ot = do_ot

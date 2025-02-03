@@ -15,14 +15,16 @@ vectorfield:
   self_cond: ${model.self_cond}
   drop_be_prob: 1.0
 
+  ### osda edges will not be used! just for compatibility
   osda_edges:
     edge_style: knn
     max_neighbors: 20
     cutoff: 15.
+  ### PUT YOUR SETTINGS HERE
   cross_edges:
     edge_style: knn
-    max_neighbors: 20
+    max_neighbors: 8
     cutoff: 15.
 
 conjugate_model:
-  _target_: rfm_docking.architectures.OptimizeProjectedConjugatedCSPNet
+  _target_: rfm_docking.architectures.DockProjectedConjugatedCSPNet

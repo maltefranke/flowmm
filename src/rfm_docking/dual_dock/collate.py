@@ -4,7 +4,7 @@ from torch_geometric.data import Batch, HeteroData, Data
 from src.flowmm.rfm.manifolds.flat_torus import FlatTorus01
 from rfm_docking.reassignment import reassign_molecule
 from rfm_docking.manifold_getter import DockingManifoldGetter
-from rfm_docking.sampling import sample_voronoi
+from rfm_docking.sampling import sample_voronoi, get_sigma
 from rfm_docking.featurization import get_feature_dims
 from rfm_docking.utils import duplicate_and_rotate_tensors
 
@@ -54,11 +54,11 @@ def dual_dock_collate_fn(
     osda.dims = com_dims
     osda.mask_f = com_mask_f
 
-    if sampling == "uniform":
+    if "uniform" in sampling:
         com_x0 = com_manifold.random(
             *com_x1.shape, dtype=com_x1.dtype, device=com_x1.device
         )
-    elif sampling == "voronoi":
+    elif "voronoi" in sampling:
         com_x0 = sample_voronoi(
             batch.loading,
             com_batch,
@@ -128,19 +128,30 @@ def dual_dock_collate_fn(
         osda.frac_coords,
         split_manifold=True,
     )
+    if "gaussian" in sampling:
+        sigma = get_sigma(
+            sigma_in_A=3, lattice_lenghts=osda.lengths, num_atoms=osda.num_atoms
+        )
+        osda_x0 = torch.randn_like(osda.frac_coords) * sigma
+        osda_x0 = manifold_getter.georep_to_flatrep(
+            osda.batch, osda_x0, split_manifold=True
+        ).flat
+        osda_x0 = osda_manifold.projx(osda_x0)
+        osda_x0 = manifold_getter.flatrep_to_georep(osda_x0, osda_dims, osda_mask_f).f
 
-    conformer = duplicate_and_rotate_tensors(conformer, batch.loading)
-    conformer = manifold_getter.georep_to_flatrep(
-        osda.batch, conformer, split_manifold=True
-    ).flat
-    conformer = osda_manifold.projx(conformer)
-    conformer = manifold_getter.flatrep_to_georep(conformer, osda_dims, osda_mask_f).f
+    elif "conformer" in sampling:
+        conformer = duplicate_and_rotate_tensors(conformer, batch.loading)
+        conformer = manifold_getter.georep_to_flatrep(
+            osda.batch, conformer, split_manifold=True
+        ).flat
+        conformer = osda_manifold.projx(conformer)
+        osda_x0 = manifold_getter.flatrep_to_georep(conformer, osda_dims, osda_mask_f).f
 
     osda.dims = osda_dims
     osda.mask_f = osda_mask_f
 
     osda_dock = Batch(
-        x0=conformer,
+        x0=osda_x0,
         x1=osda_x1,
         osda=osda,
         zeolite=zeolite,
