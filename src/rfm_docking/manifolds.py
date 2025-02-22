@@ -1,5 +1,5 @@
 import torch
-from geoopt import Euclidean
+from geoopt import Euclidean, Sphere
 
 from flowmm.rfm.manifolds.flat_torus import MaskedNoDriftFlatTorus01
 
@@ -35,3 +35,48 @@ class OptimizeFlatTorus01(DockingFlatTorus01):
 
     name = "OptimizeFlatTorus01"
     reversible = False
+
+
+class NSphere(Sphere):
+    """
+    N-spheres, one for each molecule
+    """
+
+    def __init__(self, num_mols: int, max_num_mols: int):
+        super().__init__()
+        self.max_num_mols = max_num_mols
+        mask = torch.zeros(max_num_mols, dtype=torch.bool)
+        mask[:num_mols] = torch.ones(num_mols, dtype=torch.bool)
+        self.register_buffer("mask", mask.unsqueeze(-1))
+
+    def expmap(self, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        x_shape = x.shape
+
+        out = super().expmap(x.view(-1, 3), u.view(-1, 3))
+        out = torch.nan_to_num(out, nan=0.0)
+        out = out.reshape(x_shape)
+        return out
+
+    def logmap(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        x_shape = x.shape
+
+        out = super().logmap(x.view(-1, 3), y.view(-1, 3))
+        out = torch.nan_to_num(out, nan=0.0)
+        out = out.reshape(x_shape)
+        return out
+
+    def projx(self, x: torch.Tensor) -> torch.Tensor:
+        x_shape = x.shape
+
+        out = super().projx(x.view(-1, 3))
+        out = torch.nan_to_num(out, nan=0.0)
+        out = out.reshape(x_shape)
+        return out
+
+    def proju(self, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        x_shape = x.shape
+
+        out = super().proju(x, u)
+        out = torch.nan_to_num(out, nan=0.0)
+        out = out.reshape(x_shape)
+        return out
