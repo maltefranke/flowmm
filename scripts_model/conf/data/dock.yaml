@@ -28,8 +28,8 @@ datamodule:
     train:
       _target_: src.rfm_docking.dataset.CustomCrystDataset
       name: Formation energy train
-      path: ${data.root_path}/below_500.csv 
-      save_path: ${data.root_path}/train.pt
+      path: ${data.root_path}/cleaned/train/raw/train_data_1.csv 
+      save_path: ${data.root_path}/cleaned/train/processed/train_data_1.pt
       prop: ${data.prop}
       lattice_scale_method: ${data.lattice_scale_method}
       preprocess_workers: ${data.preprocess_workers}
@@ -39,8 +39,8 @@ datamodule:
     val:
       - _target_: src.rfm_docking.dataset.CustomCrystDataset
         name: Formation energy val
-        path: ${data.root_path}/below_500_test.csv 
-        save_path: ${data.root_path}/val.pt
+        path: ${data.root_path}/cleaned/val/data_val.csv 
+        save_path: ${data.root_path}/cleaned/val/data_val.pt
         prop: ${data.prop}
         lattice_scale_method: ${data.lattice_scale_method}
         preprocess_workers: ${data.preprocess_workers}
@@ -50,8 +50,8 @@ datamodule:
     test:
       - _target_: src.rfm_docking.dataset.CustomCrystDataset
         name: Formation energy test
-        path: ${data.root_path}/below_500_test.csv
-        save_path: ${data.root_path}/test.pt
+        path: ${data.root_path}/cleaned/test_3/data_test_3.csv
+        save_path: ${data.root_path}/cleaned/test_3/data_test_3.pt
         prop: ${data.prop}
         lattice_scale_method: ${data.lattice_scale_method}
         preprocess_workers: ${data.preprocess_workers}
@@ -66,9 +66,9 @@ datamodule:
   batch_size:
     train: 64
     val: 64
-    test: 64
+    test: 128
 
-  coord_manifold: ${model.manifold_getter.coord_manifold}
+  manifold: ${model.manifold_getter}
   dataset_name: ${data.dataset_name}
 
   collate:

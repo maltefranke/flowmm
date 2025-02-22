@@ -1,0 +1,79 @@
+dataset_name: docking
+dim_coords: 3
+root_path: ${oc.env:PROJECT_ROOT}/data
+prop: 
+  - bindingatoms
+num_targets: 1
+lattice_scale_method: scale_length
+preprocess_workers: 40
+readout: mean
+max_atoms: 1000
+eval_model_name: docking
+task: dock 
+
+zeolite_edges: 
+  edge_style: knn
+  max_neighbors: 8
+  cutoff: 2.5
+  self_edges: false
+
+train_max_epochs: 10000
+early_stopping_patience: 100000
+teacher_forcing_max_epoch: 1000
+
+datamodule:
+  _target_: src.rfm_docking.datamodule.DistributedDataModule
+
+  datasets:
+    train:
+      _target_: src.rfm_docking.dataset.DistributedDatasetIterable
+      name: Formation energy train
+      raw_data_dir: ${data.root_path}/cleaned/train/raw/
+      processed_data_dir: ${data.root_path}/cleaned/train/processed/
+      prop: ${data.prop}
+      lattice_scale_method: ${data.lattice_scale_method}
+      preprocess_workers: ${data.preprocess_workers}
+      task: ${data.task}
+      zeolite_edges: ${data.zeolite_edges}
+
+    val:
+      - _target_: src.rfm_docking.dataset.DistributedDatasetIterable
+        name: Formation energy train
+        raw_data_dir: ${data.root_path}/cleaned/val/
+        processed_data_dir: ${data.root_path}/cleaned/val/
+        prop: ${data.prop}
+        lattice_scale_method: ${data.lattice_scale_method}
+        preprocess_workers: ${data.preprocess_workers}
+        task: ${data.task}
+        zeolite_edges: ${data.zeolite_edges}
+
+    test:
+      - _target_: src.rfm_docking.dataset.DistributedDatasetIterable
+        name: Formation energy train
+        raw_data_dir: ${data.root_path}/cleaned/test_1/
+        processed_data_dir: ${data.root_path}/cleaned/test_1/
+        prop: ${data.prop}
+        lattice_scale_method: ${data.lattice_scale_method}
+        preprocess_workers: ${data.preprocess_workers}
+        task: ${data.task}
+        zeolite_edges: ${data.zeolite_edges}
+
+  num_workers:
+    train: 0
+    val: 0
+    test: 0
+
+  batch_size:
+    train: 128
+    val: 128
+    test: 128
+
+  manifold: ${model.manifold_getter}
+  dataset_name: ${data.dataset_name}
+
+  collate:
+    _target_: src.rfm_docking.dock.collate.DockCollater
+
+  do_ot: false
+
+  sampling: ${train.sampling}

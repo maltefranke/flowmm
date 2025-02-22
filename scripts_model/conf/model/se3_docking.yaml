@@ -1,10 +1,12 @@
 cost_coord: 1.
+cost_rot: 1.
 cost_be: 0.
 affine_combine_costs: true
 target_distribution: unconditional
 self_cond: false
 
 manifold_getter:
-  _target_: src.rfm_docking.manifold_getter.DockingManifoldGetter
+  _target_: src.rfm_docking.manifold_getter.SE3ManifoldGetter
   manifolds:
     coord_manifold: docking_flat_torus_01  # leaves target vector field translationally equivariant
+    rot_manifold: sphere

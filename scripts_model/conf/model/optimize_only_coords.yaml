@@ -5,4 +5,6 @@ target_distribution: unconditional
 self_cond: false
 
 manifold_getter:
-  coord_manifold: optimize_flat_torus_01
+  _target_: src.rfm_docking.manifold_getter.DockingManifoldGetter
+  manifolds:
+    coord_manifold: optimize_flat_torus_01

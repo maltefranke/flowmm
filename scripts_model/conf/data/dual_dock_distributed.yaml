@@ -22,14 +22,14 @@ early_stopping_patience: 100000
 teacher_forcing_max_epoch: 1000
 
 datamodule:
-  _target_: src.rfm_docking.datamodule.CrystDataModule
+  _target_: src.rfm_docking.datamodule.DistributedDataModule
 
   datasets:
     train:
-      _target_: src.rfm_docking.dataset.CustomCrystDataset
+      _target_: src.rfm_docking.dataset.DistributedDatasetIterable
       name: Formation energy train
-      path: ${data.root_path}/train.csv 
-      save_path: ${data.root_path}/train.pt
+      raw_data_dir: ${data.root_path}/cleaned/train/raw/
+      processed_data_dir: ${data.root_path}/cleaned/train/processed/
       prop: ${data.prop}
       lattice_scale_method: ${data.lattice_scale_method}
       preprocess_workers: ${data.preprocess_workers}
@@ -37,10 +37,10 @@ datamodule:
       zeolite_edges: ${data.zeolite_edges}
 
     val:
-      - _target_: src.rfm_docking.dataset.CustomCrystDataset
-        name: Formation energy val
-        path: ${data.root_path}/val.csv 
-        save_path: ${data.root_path}/val.pt
+      - _target_: src.rfm_docking.dataset.DistributedDatasetIterable
+        name: Formation energy train
+        raw_data_dir: ${data.root_path}/cleaned/val/
+        processed_data_dir: ${data.root_path}/cleaned/val/
         prop: ${data.prop}
         lattice_scale_method: ${data.lattice_scale_method}
         preprocess_workers: ${data.preprocess_workers}
@@ -48,10 +48,10 @@ datamodule:
         zeolite_edges: ${data.zeolite_edges}
 
     test:
-      - _target_: src.rfm_docking.dataset.CustomCrystDataset
-        name: Formation energy test
-        path: ${data.root_path}/test.csv
-        save_path: ${data.root_path}/test.pt
+      - _target_: src.rfm_docking.dataset.DistributedDatasetIterable
+        name: Formation energy train
+        raw_data_dir: ${data.root_path}/cleaned/test_1/
+        processed_data_dir: ${data.root_path}/cleaned/test_1/
         prop: ${data.prop}
         lattice_scale_method: ${data.lattice_scale_method}
         preprocess_workers: ${data.preprocess_workers}
@@ -59,16 +59,16 @@ datamodule:
         zeolite_edges: ${data.zeolite_edges}
 
   num_workers:
-    train: 8
-    val: 8
-    test: 8
+    train: 0
+    val: 0
+    test: 0
 
   batch_size:
-    train: 64
-    val: 64
-    test: 64
+    train: 128
+    val: 128
+    test: 128
 
-  coord_manifold: ${model.manifold_getter.coord_manifold}
+  manifold: ${model.manifold_getter}
   dataset_name: ${data.dataset_name}
 
   collate:

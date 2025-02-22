@@ -5,11 +5,11 @@ prop:
   - bindingatoms
 num_targets: 1
 lattice_scale_method: scale_length
-preprocess_workers: 40
+preprocess_workers: 20
 readout: mean
 max_atoms: 1000
 eval_model_name: docking
-task: dock 
+task: optimize
 
 zeolite_edges: 
   edge_style: knn
@@ -22,14 +22,14 @@ early_stopping_patience: 100000
 teacher_forcing_max_epoch: 1000
 
 datamodule:
-  _target_: src.rfm_docking.datamodule.DistributedDataModule
+  _target_: src.rfm_docking.datamodule.CrystDataModule
 
   datasets:
     train:
-      _target_: src.rfm_docking.dataset.DistributedDatasetIterable
+      _target_: src.rfm_docking.dataset.CustomCrystDataset
       name: Formation energy train
-      raw_data_dir: ${data.root_path}/cleaned/train/raw/
-      processed_data_dir: ${data.root_path}/cleaned/train/processed/
+      path: ${data.root_path}/cleaned/train/raw/train_data_1.csv 
+      save_path: ${data.root_path}/cleaned/train/processed/train_data_1.pt
       prop: ${data.prop}
       lattice_scale_method: ${data.lattice_scale_method}
       preprocess_workers: ${data.preprocess_workers}
@@ -37,10 +37,10 @@ datamodule:
       zeolite_edges: ${data.zeolite_edges}
 
     val:
-      - _target_: src.rfm_docking.dataset.DistributedDatasetIterable
-        name: Formation energy train
-        raw_data_dir: ${data.root_path}/cleaned/val/
-        processed_data_dir: ${data.root_path}/cleaned/val/
+      - _target_: src.rfm_docking.dataset.CustomCrystDataset
+        name: Formation energy val
+        path: ${data.root_path}/cleaned/val/data_val.csv 
+        save_path: ${data.root_path}/cleaned/val/data_val.pt
         prop: ${data.prop}
         lattice_scale_method: ${data.lattice_scale_method}
         preprocess_workers: ${data.preprocess_workers}
@@ -48,10 +48,10 @@ datamodule:
         zeolite_edges: ${data.zeolite_edges}
 
     test:
-      - _target_: src.rfm_docking.dataset.DistributedDatasetIterable
-        name: Formation energy train
-        raw_data_dir: ${data.root_path}/cleaned/test_1/
-        processed_data_dir: ${data.root_path}/cleaned/test_1/
+      - _target_: src.rfm_docking.dataset.CustomCrystDataset
+        name: Formation energy test
+        path: ${data.root_path}/cleaned/test_3/data_test_3.csv
+        save_path: ${data.root_path}/cleaned/test_3/data_test_3.pt
         prop: ${data.prop}
         lattice_scale_method: ${data.lattice_scale_method}
         preprocess_workers: ${data.preprocess_workers}
@@ -59,21 +59,21 @@ datamodule:
         zeolite_edges: ${data.zeolite_edges}
 
   num_workers:
-    train: 0
-    val: 0
-    test: 0
+    train: 8
+    val: 8
+    test: 8
 
   batch_size:
-    train: 512
-    val: 512
-    test: 512
+    train: 64
+    val: 64
+    test: 128
 
-  coord_manifold: ${model.manifold_getter.coord_manifold}
+  manifold: ${model.manifold_getter}
   dataset_name: ${data.dataset_name}
 
   collate:
-    _target_: src.rfm_docking.dual_dock.collate.DualDockCollater
+    _target_: src.rfm_docking.optimize.collate.OptimizeCollater
 
-  do_ot: true
+  do_ot: false
 
   sampling: ${train.sampling}
