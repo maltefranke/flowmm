@@ -1,6 +1,9 @@
 import torch
+import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
+from rdkit.Chem import rdMolTransforms
+from rdkit.Geometry import Point3D
 from torch_geometric.utils import dense_to_sparse
 from sklearn.cluster import DBSCAN
 from pymatgen.core.lattice import Lattice
@@ -9,6 +12,7 @@ from scipy.spatial.transform import Rotation as R
 from flowmm.rfm.manifolds.flat_torus import FlatTorus01
 from diffcsp.common.data_utils import radius_graph_pbc
 from diffcsp.common.data_utils import lattice_params_to_matrix_torch
+from rfm_docking.product_space_dock.utils import matrix_to_axis_angle
 
 
 def smiles_to_pos(smiles, forcefield="mmff", device="cpu"):
@@ -43,6 +47,39 @@ def smiles_to_pos(smiles, forcefield="mmff", device="cpu"):
     atom_coords -= atom_coords.mean(0)
 
     return atom_coords
+
+
+def get_principal_axis(
+    smiles: str,
+    cart_coords: torch.Tensor,
+) -> torch.Tensor:
+    """Get the principal moments of inertia of a molecule."""
+
+    mol = Chem.MolFromSmiles(smiles)
+    mol = Chem.AddHs(mol)
+
+    # Ensure the molecule has a 3D conformer
+    AllChem.EmbedMolecule(mol, randomSeed=42)
+
+    mol = Chem.RemoveHs(mol)
+
+    # Get the conformer (must exist after embedding)
+    conf = mol.GetConformer()
+
+    # Set the 3D coordinates of the molecule
+    for i, pos in enumerate(cart_coords):
+        x, y, z = tuple(pos.cpu().numpy().astype(np.double))
+        conf.SetAtomPosition(i, Point3D(x, y, z))
+
+    # Compute the principal moments of inertia
+    axes, _ = rdMolTransforms.ComputePrincipalAxesAndMoments(conf)
+    axes = torch.tensor(axes, dtype=torch.float32)
+
+    # norm axis
+    principle_axis_vec = matrix_to_axis_angle(axes)
+    principle_axis_vec = principle_axis_vec / torch.norm(principle_axis_vec)
+
+    return principle_axis_vec
 
 
 def sample_rotation_matrices(num_matrices: torch.Tensor) -> torch.Tensor:
@@ -302,7 +339,7 @@ def fast_wrap_coords_edge_based(
         return torch.tensor(wrapped_pos_frac, dtype=torch.float32)
 
 
-def get_osda_mean_pbc(
+def get_wrapped_coords(
     osda_coords_frac: torch.Tensor,
     lattice: torch.Tensor,
     edge_index: torch.Tensor,
@@ -310,7 +347,7 @@ def get_osda_mean_pbc(
 ) -> torch.Tensor:
     """
     Function to calculate the mean position of osda with periodic boundary conditions.
-    Return means of osda molecules in fractional coordinates.
+    Return wrapped osda molecules and centers of masses in fractional coordinates.
     """
     osda_coords_cart = osda_coords_frac @ lattice.T
 
@@ -318,6 +355,7 @@ def get_osda_mean_pbc(
     split_osda_pos = torch.split(
         osda_coords_cart, osda_coords_cart.shape[0] // loading, dim=0
     )
+    all_wrapped_coords_frac = []
     means = []
 
     # handle each molecule separately
@@ -326,11 +364,13 @@ def get_osda_mean_pbc(
         wrapped_coords_frac = fast_wrap_coords_edge_based(
             osda_pos_i, lattice, edge_index, return_cart=False
         )
+        all_wrapped_coords_frac.append(wrapped_coords_frac)
 
-        # get mean coordinate, and wrap it back to the unit cell
-        mean = wrapped_coords_frac.mean(0) % 1.0
+        # get mean coordinate
+        mean = wrapped_coords_frac.mean(0)
         means.append(mean.view(1, 3))
 
+    all_wrapped_coords_frac = torch.cat(all_wrapped_coords_frac, dim=0)
     means = torch.cat(means, dim=0)
 
-    return means
+    return all_wrapped_coords_frac, means

@@ -63,8 +63,7 @@ class DockingRFMLitModule(ManifoldFMLitModule):
         self.save_hyperparameters()
 
         self.manifold_getter = DockingManifoldGetter(
-            coord_manifold=cfg.model.manifold_getter.coord_manifold,
-            dataset=cfg.data.dataset_name,
+            dataset=cfg.data.dataset_name, **cfg.model.manifold_getter.manifolds
         )
 
         self.costs = {
@@ -915,7 +914,7 @@ class DockingRFMLitModule(ManifoldFMLitModule):
                 "lattices": batch.lattices[i],
                 "lengths": batch.lattices[i, :3],
                 "angles": batch.lattices[i, 3:],
-                "time_per_sample": time_per_sample
+                "time_per_sample": time_per_sample,
             }
 
             torch.save(out, f"{batch.crystal_id[i]}_traj.pt")

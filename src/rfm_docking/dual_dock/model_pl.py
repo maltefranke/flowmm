@@ -63,8 +63,7 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
         self.save_hyperparameters()
 
         self.manifold_getter = DockingManifoldGetter(
-            coord_manifold=cfg.model.manifold_getter.coord_manifold,
-            dataset=cfg.data.dataset_name,
+            dataset=cfg.data.dataset_name, **cfg.model.manifold_getter.manifolds
         )
 
         self.costs = {
@@ -944,7 +943,7 @@ class DualDockingRFMLitModule(ManifoldFMLitModule):
         num_steps: int = 1_000,
     ) -> dict[str, torch.Tensor | Data]:
         batch_size = batch.osda_dock.batch.max() + 1
-        
+
         time_start = time.time()
         if self.cfg.integrate.get("compute_traj_velo_norms", False):
             recon, norms_a, norms_f, norms_l = self.gen_sample(

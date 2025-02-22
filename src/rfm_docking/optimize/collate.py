@@ -13,13 +13,11 @@ def optimize_collate_fn(
     manifold_getter: DockingManifoldGetter,
     do_ot: bool = False,
     sampling="uniform",
+    stage="train",
 ) -> HeteroData:
     """Where the magic happens"""
 
     batch = Batch.from_data_list(batch)
-
-    # osda_opt = Batch.from_data_list(batch.osda_opt)
-    # zeolite_opt = Batch.from_data_list(batch.zeolite_opt)
 
     frac_coords = [
         torch.cat([osda_opt.frac_coords, zeolite_opt.frac_coords], dim=0)
@@ -84,11 +82,15 @@ def optimize_collate_fn(
         for osda_dock, zeolite_dock in zip(batch.osda, batch.zeolite)
     ]
     x0 = torch.cat(x0, dim=0)
-    # add a tiny bit of noise to the initial configuration
-    sigma = get_sigma(
-        sigma_in_A=0.1, lattice_lenghts=osda.lengths, num_atoms=optimize_batch.num_atoms
-    )
-    x0 += torch.randn_like(x0) * sigma
+
+    # only during training add some noise to make the model more robust
+    if stage == "train":
+        sigma = get_sigma(
+            sigma_in_A=0.1,
+            lattice_lenghts=osda.lengths,
+            num_atoms=optimize_batch.num_atoms,
+        )
+        x0 += torch.randn_like(x0) * sigma
 
     x0 = manifold_getter.georep_to_flatrep(optimize_batch.batch, x0, False).flat
 
@@ -124,12 +126,14 @@ class OptimizeCollater:
         manifold_getter: DockingManifoldGetter,
         do_ot: bool = False,
         sampling: str = "uniform",
+        stage: str = "train",
     ):
         self.manifold_getter = manifold_getter
         self.do_ot = do_ot
         self.sampling = sampling
+        self.stage = stage
 
     def __call__(self, batch: list[HeteroData]) -> HeteroData:
         return optimize_collate_fn(
-            batch, self.manifold_getter, self.do_ot, self.sampling
+            batch, self.manifold_getter, self.do_ot, self.sampling, self.stage
         )

@@ -42,7 +42,7 @@ class CrystDataModule(pl.LightningDataModule):
         datasets: DictConfig,
         num_workers: DictConfig,
         batch_size: DictConfig,
-        coord_manifold: str,
+        manifold: DictConfig,
         dataset_name: str,
         collate: DictConfig,
         do_ot: bool,
@@ -58,13 +58,11 @@ class CrystDataModule(pl.LightningDataModule):
         self.val_datasets: Optional[Sequence[Dataset]] = None
         self.test_datasets: Optional[Sequence[Dataset]] = None
 
-        self.manifold_getter = DockingManifoldGetter(
-            coord_manifold=coord_manifold,
-            dataset=dataset_name,
+        manifold_getter_class = get_class(manifold._target_)
+        self.manifold_getter = manifold_getter_class(
+            dataset=dataset_name, **manifold.manifolds
         )
 
-        # TODO add OT to options
-        # ...
         collate_class = get_class(collate._target_)
         self.collate_fn = collate_class(
             manifold_getter=self.manifold_getter, do_ot=do_ot, sampling=sampling
@@ -132,9 +130,10 @@ class CrystDataModule(pl.LightningDataModule):
             test_dataset.scaler = self.scaler
 
     def train_dataloader(self, shuffle=True) -> DataLoader:
+        self.collate_fn.stage = "train"
         return DataLoader(
             self.train_dataset,
-            shuffle=shuffle,
+            # shuffle=shuffle,
             batch_size=self.batch_size.train,
             num_workers=self.num_workers.train,
             worker_init_fn=worker_init_fn,
@@ -143,10 +142,11 @@ class CrystDataModule(pl.LightningDataModule):
         )
 
     def val_dataloader(self) -> Sequence[DataLoader]:
+        self.collate_fn.stage = "val"
         return [
             DataLoader(
                 dataset,
-                shuffle=False,
+                # shuffle=False,
                 batch_size=self.batch_size.val,
                 num_workers=self.num_workers.val,
                 worker_init_fn=worker_init_fn,
@@ -157,10 +157,11 @@ class CrystDataModule(pl.LightningDataModule):
         ]
 
     def test_dataloader(self) -> Sequence[DataLoader]:
+        self.collate_fn.stage = "test"
         return [
             DataLoader(
                 dataset,
-                shuffle=False,
+                # shuffle=False,
                 batch_size=self.batch_size.test,
                 num_workers=self.num_workers.test,
                 worker_init_fn=worker_init_fn,
@@ -171,6 +172,7 @@ class CrystDataModule(pl.LightningDataModule):
         ]
 
     def predict_dataloader(self) -> Sequence[DataLoader]:
+        self.collate_fn.stage = "predict"
         return [
             DataLoader(
                 dataset,

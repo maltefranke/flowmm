@@ -18,11 +18,17 @@ from rfm_docking.featurization import (
     featurize_osda,
     get_feature_dims,
 )
-from rfm_docking.utils import gen_edges, get_osda_mean_pbc, smiles_to_pos
+from rfm_docking.utils import (
+    gen_edges,
+    get_wrapped_coords,
+    smiles_to_pos,
+)
 from rfm_docking.voronoi_utils import get_voronoi_nodes, cluster_voronoi_nodes
 
 
 def process_one_(args):
+    """Process one row of the dataframe. Return everything as numpy arrays."""
+
     row, prop_list, zeolite_params = args
 
     crystal_id = row.dock_crystal
@@ -57,14 +63,17 @@ def process_one_(args):
 
     smiles = row.ligand  # or .smiles
 
-    conformer = smiles_to_pos(smiles, forcefield="mmff", device="cpu")
+    conformer_cart = smiles_to_pos(smiles, forcefield="mmff", device="cpu")
+
     # conformer to fractional coordinates
-    conformer_frac = conformer @ inv_lattice.T
+    # conformer_frac = conformer @ inv_lattice.T
+    # conformer_frac = conformer_frac.numpy()
 
     loading = int(row.loading)
     node_feats, edge_feats, edge_index = featurize_osda(smiles)
 
     osda_node_feats = node_feats.repeat(loading, 1)
+    osda_node_feats = osda_node_feats.numpy()
 
     _, N = edge_index.shape
 
@@ -79,7 +88,7 @@ def process_one_(args):
     osda_edge_indices = edge_index.repeat(1, loading)
     osda_edge_indices += offsets
 
-    osda_edge_feats = edge_feats.repeat(loading, 1)
+    osda_edge_feats = edge_feats.repeat(loading, 1).numpy()
 
     ### process the docked structures
     dock_axyz = eval(row.dock_xyz)
@@ -119,15 +128,15 @@ def process_one_(args):
         self_edges=zeolite_params["self_edges"],
     )
 
-    dock_zeolite_graph_arrays = (
-        dock_zeolite_pos,
-        dock_zeolite_atoms,
-        lattice_lengths,
-        lattice_angles,
-        voronoi_nodes,
-        dock_zeolite_edges,
+    dock_zeolite_graph_arrays = [
+        dock_zeolite_pos.numpy(),
+        dock_zeolite_atoms.numpy(),
+        lattice_lengths.numpy(),
+        lattice_angles.numpy(),
+        voronoi_nodes.numpy(),
+        dock_zeolite_edges.numpy(),
         dock_zeolite_atoms.shape[0],
-    )
+    ]
 
     # process the osda
     dock_osda_atoms, dock_osda_pos = get_atoms_and_pos(dock_osda_axyz)
@@ -143,19 +152,22 @@ def process_one_(args):
     dock_osda_pos = (dock_osda_pos @ inv_lattice) % 1.0
 
     # center of mass (com) of the osda taking into account periodic boundary conditions
-    dock_osda_com_frac_pbc = get_osda_mean_pbc(
+    all_wrapped_coords_frac, means = get_wrapped_coords(
         dock_osda_pos, lattice_matrix_target, osda_edge_indices, loading
     )
+    dock_wrapped_coords_cart = all_wrapped_coords_frac @ lattice_matrix_target.T
+    dock_osda_com_frac_pbc = means % 1.0
 
-    dock_osda_graph_arrays = (
-        dock_osda_pos,
-        dock_osda_atoms,
-        lattice_lengths,
-        lattice_angles,
-        dock_osda_com_frac_pbc,
-        osda_edge_indices,
+    dock_osda_graph_arrays = [
+        dock_osda_pos.numpy(),
+        dock_osda_atoms.numpy(),
+        lattice_lengths.numpy(),
+        lattice_angles.numpy(),
+        dock_wrapped_coords_cart.numpy(),
+        dock_osda_com_frac_pbc.numpy(),
+        osda_edge_indices.numpy(),
         dock_osda_atoms.shape[0],
-    )
+    ]
 
     ### process the optimized structures
     opt_axyz = eval(row.opt_xyz)
@@ -167,13 +179,13 @@ def process_one_(args):
     opt_zeolite_pos = (opt_zeolite_pos @ inv_lattice) % 1.0
 
     opt_zeolite_graph_arrays = (
-        opt_zeolite_pos,
-        opt_zeolite_atoms,
-        lattice_lengths,
-        lattice_angles,
-        voronoi_nodes,
+        opt_zeolite_pos.numpy(),
+        opt_zeolite_atoms.numpy(),
+        lattice_lengths.numpy(),
+        lattice_angles.numpy(),
+        voronoi_nodes.numpy(),
         #  NOTE below we assume that opt_zeolite is close to dock_zeolite --> has same edges, save computation
-        dock_zeolite_edges,
+        dock_zeolite_edges.numpy(),
         opt_zeolite_atoms.shape[0],
     )
 
@@ -188,23 +200,24 @@ def process_one_(args):
     opt_osda_pos = (opt_osda_pos @ inv_lattice) % 1.0
 
     opt_osda_graph_arrays = (
-        opt_osda_pos,
-        opt_osda_atoms,
-        lattice_lengths,
-        lattice_angles,
-        osda_edge_indices,
+        opt_osda_pos.numpy(),
+        opt_osda_atoms.numpy(),
+        lattice_lengths.numpy(),
+        lattice_angles.numpy(),
+        osda_edge_indices.numpy(),
         opt_osda_atoms.shape[0],
     )
 
     properties = dict()
     for k in prop_list:
         if k in row.keys():
-            properties[k] = torch.tensor(row[k], dtype=torch.float64)
+            # properties[k] = torch.tensor(row[k], dtype=torch.float64)
+            properties[k] = np.array(row[k], dtype=np.float64)
 
     preprocessed_dict = {
         "crystal_id": crystal_id,
         "smiles": smiles,
-        "conformer": conformer_frac,
+        "conformer": conformer_cart,
         "loading": loading,
         "osda_feats": (osda_node_feats, osda_edge_feats, osda_edge_indices),
         "dock_zeolite_graph_arrays": dock_zeolite_graph_arrays,
@@ -217,6 +230,7 @@ def process_one_(args):
 
 
 def process_one(args):
+    """Skip the data row if an error occurs."""
     try:
         return process_one_(args)
     except Exception as e:
@@ -231,7 +245,8 @@ def custom_preprocess(
     prop_list,
     zeolite_params,
 ):
-    df = pd.read_csv(input_file)  # .loc[:0]
+    """Parallelized preprocessing of the data."""
+    df = pd.read_csv(input_file)
 
     def parallelized():
         # Create a pool of workers
@@ -249,24 +264,11 @@ def custom_preprocess(
             ):
                 yield item
 
-    # NOTE uncomment to debug process_one
-    # process_one((df.iloc[0], graph_method, prop_list))
-
     # Convert the unordered results to a list
     unordered_results = list(parallelized())
 
     # remove Nones from the list
     unordered_results = [result for result in unordered_results if result is not None]
-
-    """# Create a dictionary mapping crystal_id to results
-    mpid_to_results = {result["crystal_id"]: result for result in unordered_results}
-
-    # Create a list of ordered results based on the original order of the dataframe
-    ordered_results = [
-        mpid_to_results[df.iloc[idx]["dock_crystal"]] for idx in range(len(df))
-    ]
-
-    return ordered_results"""
 
     # we're fine with unordered results
     return unordered_results
@@ -290,17 +292,18 @@ def custom_add_scaled_lattice_prop(
         dict["scaled_lattice"] = np.concatenate([lengths, angles])
 
 
-def dict_to_data(data_dict, task, prop_list, scaler, node_feat_dims):
-    # scaler is set in DataModule set stage
+def dict_to_data(data_dict, task, prop_list, scaler, node_feat_dims) -> HeteroData:
+    """Takes a dict (created from process_one) and returns a pytorch geometric data object."""
+    # NOTE scaler is set in DataModule set stage
     prop = dict()
     for p in prop_list:
-        # print(p, type(data_dict[p]))
         prop[p] = scaler[p].transform(data_dict[p]).view(1, -1).to(dtype=torch.float32)
     (
         frac_coords,
         atom_types,
         lengths,
         angles,
+        wrapped_coords_cart,
         com_frac_pbc,
         _,  # NOTE edge indices will be overwritten with rdkit featurization
         num_atoms,
@@ -317,19 +320,19 @@ def dict_to_data(data_dict, task, prop_list, scaler, node_feat_dims):
     # https://pytorch-geometric.readthedocs.io/en/latest/notes/batching.html
     osda_data = Data(
         frac_coords=torch.Tensor(frac_coords),
+        wrapped_coords_cart=torch.Tensor(wrapped_coords_cart),
         atom_types=torch.LongTensor(atom_types),
         lengths=torch.Tensor(lengths).view(1, -1),
         angles=torch.Tensor(angles).view(1, -1),
         edge_index=torch.LongTensor(
             osda_edge_indices
         ).contiguous(),  # shape (2, num_edges)
-        edge_feats=osda_edge_feats,
-        node_feats=osda_node_feats,
-        center_of_mass=com_frac_pbc,
+        edge_feats=torch.Tensor(osda_edge_feats),
+        node_feats=torch.Tensor(osda_node_feats),
+        center_of_mass=torch.Tensor(com_frac_pbc),
         num_atoms=num_atoms,
         num_bonds=osda_edge_indices.shape[0],
         num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
-        # y=prop.view(1, -1), # TODO mrx prop is now a dict so this will fail
     )
 
     (
@@ -345,7 +348,7 @@ def dict_to_data(data_dict, task, prop_list, scaler, node_feat_dims):
     # assign the misc class to the zeolite node feats, except for atom types
     zeolite_node_feats = torch.tensor(node_feat_dims) - 1
     zeolite_node_feats = zeolite_node_feats.repeat(num_atoms, 1)
-    zeolite_node_feats[:, 0] = atom_types
+    zeolite_node_feats[:, 0] = torch.tensor(atom_types, dtype=torch.long)
 
     zeolite_data = Data(
         frac_coords=torch.Tensor(frac_coords),
@@ -353,7 +356,7 @@ def dict_to_data(data_dict, task, prop_list, scaler, node_feat_dims):
         lengths=torch.Tensor(lengths).view(1, -1),
         angles=torch.Tensor(angles).view(1, -1),
         edge_index=torch.LongTensor(edge_indices).contiguous(),  # shape (2, num_edges)
-        voronoi_nodes=voronoi_nodes,
+        voronoi_nodes=torch.Tensor(voronoi_nodes),
         node_feats=zeolite_node_feats,
         num_atoms=num_atoms,
         num_bonds=edge_indices.shape[0],
@@ -379,8 +382,8 @@ def dict_to_data(data_dict, task, prop_list, scaler, node_feat_dims):
             edge_index=torch.LongTensor(
                 osda_edge_indices
             ).contiguous(),  # shape (2, num_edges)
-            edge_feats=osda_edge_feats,
-            node_feats=osda_node_feats,
+            edge_feats=torch.Tensor(osda_edge_feats),
+            node_feats=torch.Tensor(osda_node_feats),
             num_atoms=num_atoms,
             num_bonds=osda_edge_indices.shape[0],
             num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
@@ -404,7 +407,7 @@ def dict_to_data(data_dict, task, prop_list, scaler, node_feat_dims):
             edge_index=torch.LongTensor(
                 edge_indices
             ).contiguous(),  # shape (2, num_edges)
-            voronoi_nodes=voronoi_nodes,
+            voronoi_nodes=torch.Tensor(voronoi_nodes),
             node_feats=zeolite_node_feats,
             num_atoms=num_atoms,
             num_bonds=edge_indices.shape[0],
@@ -416,7 +419,7 @@ def dict_to_data(data_dict, task, prop_list, scaler, node_feat_dims):
     data.crystal_id = data_dict["crystal_id"]
     data.smiles = smiles
     data.loading = loading
-    data.conformer = conformer
+    data.conformer = torch.Tensor(conformer)
     data.osda = osda_data
     data.zeolite = zeolite_data
     if "optimize" in task:
@@ -729,7 +732,7 @@ class DistributedDatasetIterable(IterableDataset):
                 )
                 yield data  # Stream graphs one by one
 
-    def __getitem__(self, idx):
+    """def __getitem__(self, idx):
         file_idx = np.searchsorted(self.cumulative_sizes, idx, side="right")
         if file_idx > 0:
             idx_in_file = idx - self.cumulative_sizes[file_idx - 1]
@@ -740,7 +743,7 @@ class DistributedDatasetIterable(IterableDataset):
         data = dict_to_data(
             data_dict, self.task, self.prop, self.scaler, self.node_feat_dims
         )
-        return data
+        return data"""
 
 
 if __name__ == "__main__":
