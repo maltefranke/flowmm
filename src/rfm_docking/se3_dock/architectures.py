@@ -23,6 +23,7 @@ from rfm_docking.featurization import get_feature_dims
 from rfm_docking.utils import merge_edges, gen_edges
 from diffcsp.common.data_utils import (
     lattice_params_to_matrix_torch,
+    cart_to_frac_coords,
 )
 from rfm_docking.product_space_dock.utils import (
     axis_angle_to_matrix,
@@ -304,7 +305,6 @@ class CSPNet(DiffCSPNet):
         # it makes sense to have no bias here since p(F) is translation invariant
         self.coord_out = nn.Linear(hidden_dim, n_space, bias=False)
         self.rotation_out = nn.Linear(hidden_dim, 3)
-        self.rot_magnitude_out = nn.Linear(hidden_dim, 1)
 
         # readout block for binding energy. TODO mrx add options: : osda only, zeolite only, osda concat zeolite, osda + zeolite. Check padding as well
         self.be_out = nn.Linear(hidden_dim, 1, bias=True)
@@ -329,10 +329,16 @@ class SE3DockCSPNet(CSPNet):
         batch: Batch,
         t,
     ):
+        if len(t) == 1:
+            # if there is only one time given, broadcast to the whole batch
+            t = t.repeat(batch.loading.shape[0], 1)
+
         t_emb = self.time_emb(t)
-        t_emb = t_emb.expand(
-            batch.osda.num_atoms.shape[0], -1
-        )  # if there is a single t, repeat for the batch
+
+        # [N_atoms, t_emb_dim]
+        t_per_atom = t_emb.repeat_interleave(
+            batch.osda.num_atoms.to(t_emb.device), dim=0
+        )
 
         be_in = batch.y["bindingatoms"].float()
         with torch.no_grad():
@@ -342,7 +348,12 @@ class SE3DockCSPNet(CSPNet):
                 be_in,
             )
         be_emb = self.be_emb(be_in.view(-1, 1))
+        # [B, be_emb_dim]
         be_emb = be_emb.expand(batch.osda.num_atoms.shape[0], -1)
+        # [N_atoms, be_emb_dim]
+        be_per_atom = be_emb.repeat_interleave(
+            batch.osda.num_atoms.to(t_emb.device), dim=0
+        )
 
         edge_feat_dims = get_feature_dims()[-1]
         dummy_edge_ids = (
@@ -460,12 +471,6 @@ class SE3DockCSPNet(CSPNet):
         # neural network
         # embed atom features
         osda_node_features = self.node_embedding(batch.osda.node_feats)
-        t_per_atom = t_emb.repeat_interleave(
-            batch.osda.num_atoms.to(t_emb.device), dim=0
-        )
-        be_per_atom = be_emb.repeat_interleave(
-            batch.osda.num_atoms.to(t_emb.device), dim=0
-        )
         osda_node_features = torch.cat(
             [
                 osda_node_features,
@@ -552,10 +557,6 @@ class SE3DockCSPNet(CSPNet):
 
         f_out = self.coord_out(mol_wise_feats)
         rot_out = self.rotation_out(mol_wise_feats)
-        rot_out_norm = torch.linalg.vector_norm(rot_out, dim=-1)
-        rot_out = rot_out / rot_out_norm.unsqueeze(-1)
-
-        rot_magnitude = self.rot_magnitude_out(mol_wise_feats)
 
         # predict binding energy TODO mrx add more options
         osda_node_features = scatter(
@@ -566,7 +567,7 @@ class SE3DockCSPNet(CSPNet):
         )
         be_out = self.be_out(osda_node_features)
 
-        return f_out, rot_out, rot_magnitude, be_out
+        return f_out, rot_out, be_out
 
 
 class SE3ProjectedConjugatedCSPNet(nn.Module):
@@ -603,8 +604,8 @@ class SE3ProjectedConjugatedCSPNet(nn.Module):
         self,
         batch: Batch,
         t: torch.Tensor,
-        x: torch.Tensor,
-        rot_magnitude: torch.Tensor,
+        f_t: torch.Tensor,
+        rot_t: torch.Tensor,
         manifold: Manifold,
         cond_coords: torch.Tensor | None = None,
         cond_be: torch.Tensor | None = None,
@@ -615,16 +616,16 @@ class SE3ProjectedConjugatedCSPNet(nn.Module):
         representations are mapped as follows:
         `flat -> flat_manifold -> pytorch_geom -(nn)-> pytorch_geom -> flat_tangent_estimate -> flat_tangent`
         """
-        x_flat_out, rot_magnitude_pred, be = self._conjugated_forward(
-            batch, t, x, rot_magnitude, cond_coords, cond_be
+        f_out, rot_out, be = self._conjugated_forward(
+            batch, t, f_t, rot_t, cond_coords, cond_be
         )
 
         # TODO below needs to be adapted later. magnitude not used in guidance!!
         """if guidance_strength == 0.0:
             for prop in batch.y.keys():
                 batch.y[prop] = torch.zeros_like(batch.y[prop]).to(x.device)
-            guid_x, _, guid_be = self._conjugated_forward(
-                batch, t, x, cond_coords, cond_be
+            f_out, rot_out, guid_be = self._conjugated_forward(
+                batch, t, f_t, rot_t cond_coords, cond_be
             )
             x_flat_out = x_flat_out + guidance_strength * guid_x
             guid_strength_tot = guidance_strength + 1
@@ -632,12 +633,12 @@ class SE3ProjectedConjugatedCSPNet(nn.Module):
                 be / guid_strength_tot + guid_be * guidance_strength / guid_strength_tot
             )  # TODO mrx add options"""
 
-        x_flat_out = manifold.proju(x, x_flat_out)
+        """x_flat_out = manifold.proju(x, x_flat_out)
 
         if self.metric_normalized and hasattr(manifold, "metric_normalized"):
-            x_flat_out = manifold.metric_normalized(x, x_flat_out)
+            x_flat_out = manifold.metric_normalized(x, x_flat_out)"""
 
-        return x_flat_out, rot_magnitude_pred, be
+        return f_out, rot_out, be
 
 
 class SE3DockProjectedConjugatedCSPNet(SE3ProjectedConjugatedCSPNet):
@@ -645,8 +646,8 @@ class SE3DockProjectedConjugatedCSPNet(SE3ProjectedConjugatedCSPNet):
         self,
         batch: Batch,
         t: torch.Tensor,
-        x: torch.Tensor,
-        rot_magnitude: torch.Tensor,
+        f_t: torch.Tensor,
+        rot_t: torch.Tensor,
         cond_coords: torch.Tensor | None,
         cond_be: torch.Tensor | None,
     ) -> ManifoldGetterOut:
@@ -661,17 +662,10 @@ class SE3DockProjectedConjugatedCSPNet(SE3ProjectedConjugatedCSPNet):
             atoms_per_mol,
         )
 
-        # get georep to apply rotation
-        xt_geo = self.manifold_getter.flatrep_to_georep(x, batch.dims, batch.mask)
-
         # apply translation and rotation to initial conformer
         # rotate first
-        rot_t_geo = xt_geo.rot
-        rot_t_geo = rot_magnitude.unsqueeze(-1) * rot_t_geo
-        rot_mat_t = axis_angle_to_matrix(rot_t_geo.squeeze())
-
         conformer_rot_t_cart = torch.einsum(
-            "nij,nj->ni", rot_mat_t[mol_ids], batch.conformer
+            "nij,nj->ni", rot_t[mol_ids], batch.conformer
         )
 
         # to fractional coordinates
@@ -690,31 +684,20 @@ class SE3DockProjectedConjugatedCSPNet(SE3ProjectedConjugatedCSPNet):
         )
 
         # then translate
-        f_t_geo = xt_geo.f
-        conformer = conformer_rot_t_frac + f_t_geo[mol_ids]
+        conformer = conformer_rot_t_frac + f_t[mol_ids]
 
         # wrap back into unit cell
         frac_coords_t = FlatTorus01().projx(conformer)
 
         batch.xt = frac_coords_t
 
-        f_out, rot_out, rot_magnitude_out, be_out = self.cspnet(
+        f_out, rot_out, be_out = self.cspnet(
             batch,
             t,
         )
 
-        batch_ids = torch.repeat_interleave(
-            torch.arange(batch.loading.shape[0], device=batch.loading.device),
-            batch.loading,
-        )
-
         return (
-            self.manifold_getter.georep_to_flatrep(
-                coord_batch=batch_ids,
-                frac_coords=f_out,
-                rot=rot_out,
-                split_manifold=False,
-            ).flat,
-            rot_magnitude_out,
+            f_out,
+            rot_out,
             be_out,
         )

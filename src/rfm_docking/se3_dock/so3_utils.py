@@ -509,25 +509,69 @@ def calc_rot_vf(mat_t: torch.Tensor, mat_1: torch.Tensor) -> torch.Tensor:
     return rotmat_to_rotvec(rot_mult(rot_transpose(mat_t), mat_1))
 
 
+def logmap(base_mat: torch.Tensor, mat: torch.Tensor) -> torch.Tensor:
+    """
+    Computes the vector field Log_{base_mat}(mat).
+
+    Args:
+        base_mat (torch.Tensor): base point to compute vector field at.
+        mat_1 (torch.Tensor): target rotation.
+
+    Returns:
+        Rotation vector representing the vector field.
+    """
+    return rotmat_to_rotvec(rot_mult(rot_transpose(base_mat), mat))
+
+
+def expmap(base_mat, rot_vf) -> torch.Tensor:
+    """
+    Computes the exponential map. Specifically, R = Exp_{base_mat}(rot_vf).
+    """
+
+    mat = rotvec_to_rotmat(rot_vf)
+    if base_mat.shape != mat.shape:
+        raise ValueError(
+            f"Incompatible shapes: base_mat={base_mat.shape}, mat={mat.shape}"
+        )
+    return torch.einsum("...ij,...jk->...ik", base_mat, mat)
+
+
 def geodesic_t(
-    t: float, mat: torch.Tensor, base_mat: torch.Tensor, rot_vf=None
+    base_mat: torch.Tensor, mat: torch.Tensor, t: float, rot_vf=None
 ) -> torch.Tensor:
     """
     Computes the geodesic at time t. Specifically, R_t = Exp_{base_mat}(t * Log_{base_mat}(mat)).
 
     Args:
-        t: time along geodesic.
-        mat: target points on manifold.
-        base_mat: source point on manifold.
+        base_mat: source point on manifold. (B, 3, 3)
+        mat: target points on manifold. (B, 3, 3)
+        t: time along geodesic. (B, 1)
 
     Returns:
         Point along geodesic starting at base_mat and ending at mat.
     """
     if rot_vf is None:
-        rot_vf = calc_rot_vf(base_mat, mat)
-    mat_t = rotvec_to_rotmat(t * rot_vf)
-    if base_mat.shape != mat_t.shape:
-        raise ValueError(
-            f"Incompatible shapes: base_mat={base_mat.shape}, mat_t={mat_t.shape}"
-        )
-    return torch.einsum("...ij,...jk->...ik", base_mat, mat_t)
+        rot_vf = logmap(base_mat, mat)
+
+    return expmap(base_mat, t * rot_vf)
+
+
+if __name__ == "__main__":
+    from scipy.spatial.transform import Rotation as R
+    from functools import partial
+    from torch.autograd.functional import jvp
+
+    # num_matrices = 3
+
+    # rotmat_0 = torch.tensor(R.random(num_matrices).as_matrix(), dtype=torch.float32)
+    # rotmat_1 = torch.tensor(R.random(num_matrices).as_matrix(), dtype=torch.float32)
+
+    rotmat_0 = rotvec_to_rotmat(torch.tensor([[1.0, 0, 0], [1.0, 0, 0], [1.0, 0, 0]]))
+    rotmat_1 = rotvec_to_rotmat(torch.tensor([[0.0, 1, 0], [0.0, 1, 0], [0.0, 1, 0]]))
+
+    t = torch.tensor([0.0, 0.5, 1.0]).view(-1, 1)
+
+    mani_geo = partial(geodesic_t, rotmat_0, rotmat_1)
+    x_t, u_t = jvp(mani_geo, (t,), (torch.ones_like(t).to(t),))
+
+    print(geodesic)

@@ -14,6 +14,8 @@ from rfm_docking.product_space_dock.utils import (
 )
 from diffcsp.common.data_utils import (
     lattice_params_to_matrix_torch,
+    frac_to_cart_coords,
+    cart_to_frac_coords,
 )
 
 
@@ -42,34 +44,26 @@ def se3_dock_collate_fn(
     for i, (conf, wrapped) in enumerate(zip(conformers_cart, wrapped_coords_cart)):
         conf_batched = conf.repeat(batch.loading[i], 1, 1)
 
+        # TODO for debugging, always take the same conformer
         # rotate the conformers randomly
-        random_rotations = sample_rotation_matrices(batch.loading[i])
+        random_rotations = sample_rotation_matrices(
+            batch.loading[i], dtype=conf_batched.dtype
+        )
         conf_cart_rotated = torch.einsum("bij,bnj->bni", random_rotations, conf_batched)
-
-        """lattice_mat = lattice_params_to_matrix_torch(
-            batch.osda[i].lengths, batch.osda[i].angles
-        ).squeeze()
-        inv_lattice_mat = torch.inverse(torch.tensor(lattice_mat, dtype=torch.float32))
-        conf_frac_rotated = conf_cart_rotated @ inv_lattice_mat.T"""
 
         all_conf_cart.append(conf_cart_rotated.reshape(-1, 3))
 
         wrapped_cart_batched = wrapped.reshape(batch.loading[i], -1, 3)
-        # wrapped_cart_batched = wrapped_frac_batched @ lattice_mat
 
         # calculate the ground truth rotation matrix with the kabsch algorithm
         rot_1_i, _ = rigid_transform_Kabsch_3D_torch_batch(
             conf_cart_rotated, wrapped_cart_batched
         )
-        # 3x3 matrix -> 3 Euler angles
-        rot_1_i = matrix_to_axis_angle(rot_1_i)
+
         rot_1.append(rot_1_i)
 
     rot_1 = torch.cat(rot_1)
     conf_cart_rotated = torch.cat(all_conf_cart, dim=0)
-
-    rot_1_norm = torch.linalg.vector_norm(rot_1, dim=-1)
-    rot_1 = rot_1 / rot_1_norm.unsqueeze(-1)
 
     # batch data
     y = batch.y  # NOTE dictionary of properties
@@ -82,23 +76,7 @@ def se3_dock_collate_fn(
     osda = Batch.from_data_list(osda)
     zeolite = Batch.from_data_list(zeolite)
 
-    batch_ids = torch.repeat_interleave(
-        torch.arange(batch.loading.shape[0]), batch.loading
-    )
-
-    (
-        x_1,
-        manifold,
-        f_manifold,
-        rot_manifold,
-        dims,
-        mask,
-    ) = manifold_getter(
-        frac_coords=osda.center_of_mass,
-        rot=rot_1,
-        coord_batch=batch_ids,
-        split_manifold=True,
-    )
+    f_1 = osda.center_of_mass
 
     def sample(sampling):
         # sample the center of masses
@@ -119,19 +97,11 @@ def se3_dock_collate_fn(
 
         # sample random rotation matrices from scipy
         num_matrices = batch.loading.sum()
-        rot_0_matrix = sample_rotation_matrices(num_matrices)
-        rot_0 = matrix_to_axis_angle(rot_0_matrix)
+        rot_0 = sample_rotation_matrices(num_matrices, dtype=conf_batched.dtype)
 
         return f_0, rot_0
 
     f_0, rot_0 = sample(sampling=sampling)
-
-    rot_0_norm = torch.linalg.vector_norm(rot_0, dim=-1)
-    rot_0 = rot_0 / rot_0_norm.unsqueeze(-1)
-
-    x_0 = manifold_getter.georep_to_flatrep(
-        f_0, rot_0, batch_ids, split_manifold=True
-    ).flat
 
     # lattices is the invariant(!!) representation of the lattice, parametrized by lengths and angles
     lattices = torch.cat([osda.lengths, osda.angles], dim=-1)
@@ -159,25 +129,24 @@ def se3_dock_collate_fn(
             osda.batch, x0_geo, split_manifold=True
         ).flat"""
 
+    batch_id = torch.repeat_interleave(
+        torch.arange(batch.loading.shape[0], device=f_0.device), batch.loading
+    )
+
     batch = Batch(
         crystal_id=crystal_id,
         smiles=smiles,
         osda=osda,
         zeolite=zeolite,
         loading=batch.loading,
-        x0=x_0,
-        x1=x_1,
+        f_0=f_0,
+        f_1=f_1,
+        rot_0=rot_0,
+        rot_1=rot_1,
         conformer=conf_cart_rotated,
         lattices=lattices,
         num_atoms=osda.num_atoms,
-        manifold=manifold,
-        f_manifold=f_manifold,
-        rot_manifold=rot_manifold,
-        dims=dims,
-        mask=mask,
-        rot_magnitude_0=rot_0_norm,
-        rot_magnitude_1=rot_1_norm,
-        batch=osda.batch,
+        batch=batch_id,
         y=y,
     )
     return batch
