@@ -15,7 +15,7 @@ from diffcsp.common.data_utils import lattice_params_to_matrix_torch
 from rfm_docking.product_space_dock.utils import matrix_to_axis_angle
 
 
-def smiles_to_pos(smiles, forcefield="mmff", device="cpu"):
+def smiles_to_pos(smiles, forcefield="mmff", device="cpu", dtype=torch.float64):
     """Convert smiles to 3D coordinates."""
     # Use RDKit to generate a molecule from the SMILES string
     mol = Chem.MolFromSmiles(smiles)
@@ -37,7 +37,7 @@ def smiles_to_pos(smiles, forcefield="mmff", device="cpu"):
     for i, _ in enumerate(mol.GetAtoms()):
         positions = mol.GetConformer().GetAtomPosition(i)
         pos = torch.tensor(
-            [positions.x, positions.y, positions.z], dtype=torch.float32, device=device
+            [positions.x, positions.y, positions.z], dtype=dtype, device=device
         )
         atom_coords.append(pos)
 
@@ -82,10 +82,12 @@ def get_principal_axis(
     return principle_axis_vec
 
 
-def sample_rotation_matrices(num_matrices: torch.Tensor) -> torch.Tensor:
+def sample_rotation_matrices(
+    num_matrices: torch.Tensor, dtype=torch.float64
+) -> torch.Tensor:
     """Samples random 3D rotation matrices."""
     return torch.tensor(
-        R.random(num_matrices).as_matrix(), dtype=torch.float32
+        R.random(num_matrices).as_matrix(), dtype=dtype
     )  # Shape: (num_matrices, 3, 3)
 
 
