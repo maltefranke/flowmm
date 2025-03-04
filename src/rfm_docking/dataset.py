@@ -55,7 +55,7 @@ def process_one_(args):
         U[:, -1] *= -1  # Correct for reflection if necessary
         R = U @ Vt
 
-    R = torch.tensor(R, dtype=torch.float64)
+    R = torch.tensor(R, dtype=torch.float32)
 
     inv_lattice = torch.inverse(
         torch.tensor(lattice_matrix_target, dtype=torch.float32)
@@ -64,7 +64,7 @@ def process_one_(args):
     smiles = row.ligand  # or .smiles
 
     conformer_cart = smiles_to_pos(
-        smiles, forcefield="mmff", device="cpu", dtype=torch.float64
+        smiles, forcefield="mmff", device="cpu", dtype=torch.float32
     )
 
     loading = int(row.loading)

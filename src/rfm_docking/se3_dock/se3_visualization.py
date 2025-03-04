@@ -82,7 +82,7 @@ def create_gif_from_traj(
             "ni,ij->ni", conformer_rot_t_cart, inv_lattice_mat
         )
 
-        frac_coords_i = conformer_rot_t_frac + f[mol_ids]
+        frac_coords_i = conformer_rot_t_frac + f.view(-1, 3)[mol_ids]
         frac_coords_i = frac_coords_i % 1.0
 
         if structure_type == "osda_pred_and_none_target":
@@ -141,10 +141,10 @@ def create_gif_from_traj(
 
 
 if __name__ == "__main__":
-    traj_file = "runs/trash/2025-03-02/21-02-45/se3_docking-se3_dock_cspnet-7ck6b0d8/156559915_traj.pt"
+    traj_file = "/home/malte/flowmm/runs/trash/2025-03-03/23-11-41/se3_docking-se3_dock_cspnet-vdepf1ln/156559911_traj.pt"
 
     create_gif_from_traj(
         traj_file,
-        "runs/trash/2025-03-02/21-02-45/se3_docking-se3_dock_cspnet-7ck6b0d8/138480949_traj.pt",
+        traj_file,
         structure_type="all_pred_and_none_target",
     )

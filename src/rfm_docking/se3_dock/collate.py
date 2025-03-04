@@ -40,6 +40,7 @@ def se3_dock_collate_fn(
 
     # match the conformers to get the ground truth rotation matrices
     rot_1 = []
+    f_1 = []
     all_conf_cart = []
     for i, (conf, wrapped) in enumerate(zip(conformers_cart, wrapped_coords_cart)):
         conf_batched = conf.repeat(batch.loading[i], 1, 1)
@@ -56,13 +57,22 @@ def se3_dock_collate_fn(
         wrapped_cart_batched = wrapped.reshape(batch.loading[i], -1, 3)
 
         # calculate the ground truth rotation matrix with the kabsch algorithm
-        rot_1_i, _ = rigid_transform_Kabsch_3D_torch_batch(
+        rot_1_i, trans_1_i = rigid_transform_Kabsch_3D_torch_batch(
             conf_cart_rotated, wrapped_cart_batched
         )
 
+        f_1_i = cart_to_frac_coords(
+            trans_1_i.view(-1, 3),
+            batch.osda[i].lengths,
+            batch.osda[i].angles,
+            len(trans_1_i),
+        )
+
         rot_1.append(rot_1_i)
+        f_1.append(f_1_i)
 
     rot_1 = torch.cat(rot_1)
+    f_1 = torch.cat(f_1)
     conf_cart_rotated = torch.cat(all_conf_cart, dim=0)
 
     # batch data
@@ -76,7 +86,7 @@ def se3_dock_collate_fn(
     osda = Batch.from_data_list(osda)
     zeolite = Batch.from_data_list(zeolite)
 
-    f_1 = osda.center_of_mass
+    # f_1 = osda.center_of_mass
 
     def sample(sampling):
         # sample the center of masses
@@ -91,7 +101,8 @@ def se3_dock_collate_fn(
                 loading=batch.loading,
             )
         elif sampling == "com":
-            f_0 = osda.center_of_mass
+            # f_0 = osda.center_of_mass
+            f_0 = f_1
         else:
             raise ValueError(f"Sampling method <{sampling}> not recognized")
 

@@ -379,7 +379,9 @@ class SE3DockingRFMLitModule(ManifoldFMLitModule):
             batch.loading.shape[0], dtype=f_0.dtype, device=f_0.device
         ).reshape(-1, 1)
 
-        f_t, rot_t, u_f, u_rot = self.manifold(f_0, f_1, rot_0, rot_1, t[batch.batch])
+        t_per_mol = t[batch.batch]
+
+        f_t, rot_t, u_f, u_rot = self.manifold(f_0, f_1, rot_0, rot_1, t_per_mol)
 
         u_f_pred, rot_vec_pred, be_pred = vecfield(
             t=t,
@@ -394,12 +396,21 @@ class SE3DockingRFMLitModule(ManifoldFMLitModule):
         u_rot_pred = calc_rot_vf(rot_t, rotmat_pred)
 
         # loss for fractional coordinates
+        # adjusted from FrameFlow https://arxiv.org/pdf/2401.04082 eqs. 20 and 21
         u_f_error = u_f_pred - u_f
-        u_f_loss = torch.sum(u_f_error**2, dim=-1).mean()
+        u_f_loss = (
+            torch.sum(u_f_error**2, dim=-1)
+            / (1 - torch.where(t_per_mol >= 0.9, 0.9, t_per_mol)) ** 2
+        )
+        u_f_loss = u_f_loss.mean()
 
         # loss for rotation
         u_rot_error = u_rot_pred - u_rot
-        u_rot_loss = torch.sum(u_rot_error**2, dim=-1).mean()
+        u_rot_loss = (
+            torch.sum(u_rot_error**2, dim=-1)
+            / (1 - torch.where(t_per_mol >= 0.9, 0.9, t_per_mol)) ** 2
+        )
+        u_rot_loss = u_rot_loss.mean()
 
         # loss for binding energy
         be_loss = F.l1_loss(be_pred, batch.y["bindingatoms"])

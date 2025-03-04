@@ -196,7 +196,7 @@ class CartesianCSPLayer(CSPLayer):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.dis_emb = SinusoidsEmbeddingCart(n_frequencies=64, n_space=3)
+        self.dis_emb = SinusoidsEmbeddingCart(n_frequencies=128, n_space=3)
 
     def get_edge_features(
         self,
@@ -291,7 +291,7 @@ class CSPNet(DiffCSPNet):
         for i in range(0, num_layers):
             self.add_module(
                 "csp_layer_%d" % i,
-                CartesianCSPLayer(
+                CSPLayer(
                     hidden_dim,
                     self.act_fn,
                     self.dis_emb,
